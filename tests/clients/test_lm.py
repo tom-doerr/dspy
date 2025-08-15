@@ -219,13 +219,12 @@ def test_reasoning_model_token_parameter():
 
 def test_reasoning_model_requirements():
     # Should raise assertion error if temperature or max_tokens requirements not met
-    with pytest.raises(AssertionError) as exc_info:
+    with pytest.raises(ValueError, match="reasoning models require passing temperature=1.0 and max_tokens >= 20000"):
         dspy.LM(
             model="openai/o1",
             temperature=0.7,  # Should be 1.0
             max_tokens=1000,  # Should be >= 20_000
         )
-    assert "reasoning models require passing temperature=1.0 and max_tokens >= 20_000" in str(exc_info.value)
 
     # Should pass with correct parameters
     lm = dspy.LM(
@@ -374,3 +373,39 @@ async def test_async_lm_call_with_cache(tmp_path):
         assert mock_alitellm_completion.call_count == 2
 
     dspy.cache = original_cache
+
+
+def test_lm_history_size_limit():
+    lm = dspy.LM(model="openai/gpt-4o-mini")
+    with dspy.context(max_history_size=5):
+        with mock.patch("litellm.completion") as mock_completion:
+            mock_completion.return_value = ModelResponse(
+                choices=[Choices(message=Message(content="test answer"))],
+                model="openai/gpt-4o-mini",
+            )
+
+            for _ in range(10):
+                lm("query")
+
+    assert len(lm.history) == 5
+
+
+def test_disable_history():
+    lm = dspy.LM(model="openai/gpt-4o-mini")
+    with dspy.context(disable_history=True):
+        with mock.patch("litellm.completion") as mock_completion:
+            mock_completion.return_value = ModelResponse(
+                choices=[Choices(message=Message(content="test answer"))],
+                model="openai/gpt-4o-mini",
+            )
+            for _ in range(10):
+                lm("query")
+
+    assert len(lm.history) == 0
+
+    with dspy.context(disable_history=False):
+        with mock.patch("litellm.completion") as mock_completion:
+            mock_completion.return_value = ModelResponse(
+                choices=[Choices(message=Message(content="test answer"))],
+                model="openai/gpt-4o-mini",
+            )

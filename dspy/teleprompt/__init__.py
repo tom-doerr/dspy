@@ -14,6 +14,8 @@ from dspy.teleprompt.teleprompt import Teleprompter
 from dspy.teleprompt.teleprompt_optuna import BootstrapFewShotWithOptuna
 from dspy.teleprompt.vanilla import LabeledFewShot
 
+from .gepa.gepa import GEPA
+
 __all__ = [
     "AvatarOptimizer",
     "BetterTogether",
@@ -21,6 +23,7 @@ __all__ = [
     "BootstrapFinetune",
     "COPRO",
     "Ensemble",
+    "GEPA",
     "KNNFewShot",
     "MIPROv2",
     "BootstrapFewShotWithRandomSearch",
