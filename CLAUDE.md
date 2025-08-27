@@ -127,3 +127,40 @@ When modifying adapters:
 - Optimizers should be model-agnostic when possible
 - Cache invalidation is handled automatically for most changes
 - Documentation in `docs/` uses MkDocs - preview with `mkdocs serve`
+
+## Custom Fork Features
+
+### SIMBAT Optimizer
+- Location: `dspy/teleprompt/simbat.py`
+- SIMBA with Tail evaluation for better optimization
+- Usage: `--optimizer simbat --tail-eval-size 128`
+- Requires Python 3.11+
+
+### TFLL Metric (In Progress)
+- Location: `dspy/metrics/tfll.py`
+- Teacher-Forced Log-Likelihood metric
+- One raw API call with echo+logprobs
+- For metric-only optimization
+
+## TFLL Implementation Plan
+
+### 1. Metric Class Features
+- `TFLLMetric` class that renders messages with gold label teacher-forced
+- Single raw API call with `echo+logprobs`
+- Returns mean log-prob (optionally + top-k margin for TFLL-M)
+- Optional feedback text generation for GEPA optimization
+
+### 2. Optimizer Integration Options
+- Option A: Add `metric_only=True` flag to optimizers
+- Option B: NullLM context manager for drop-in support
+- Skip program.forward() calls during optimization
+
+### 3. LM Raw Interface
+- Add `raw_chat()` method to LM class
+- Pass through provider logprobs/echo
+- Returns raw dict with choices[0].logprobs.prompt
+
+### 4. Configuration & Defaults
+- `use_margin=True`, `margin_alpha=0.5`, `top_logprobs=5`
+- Subsample 50-200 examples per round
+- Cache (candidate_id, example_id) → score
