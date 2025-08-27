@@ -1,0 +1,129 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What is DSPy
+
+DSPy (Declarative Self-improving Python) is a framework for programming—not prompting—language models. It allows developers to build modular AI systems with composable Python code and automatically optimize prompts and weights.
+
+## Key Development Commands
+
+### Running Tests
+```bash
+# Run all tests
+pytest
+
+# Run specific module tests
+pytest tests/predict
+
+# With uv (recommended)
+uv run pytest tests/predict
+
+# Run a single test
+pytest tests/predict/test_chain_of_thought.py::test_cot_initialization
+```
+
+### Code Quality
+```bash
+# Run pre-commit hooks (includes ruff)
+pre-commit run --all-files
+
+# Run ruff directly
+ruff check dspy/
+ruff format dspy/
+
+# Install pre-commit hooks for automatic checking
+pre-commit install
+```
+
+### Building and Installation
+```bash
+# Install in development mode with uv (recommended)
+uv sync --extra dev
+
+# Alternative: standard pip install
+pip install -e ".[dev]"
+
+# Build package
+python -m build
+```
+
+## Architecture Overview
+
+### Core Components Hierarchy
+1. **Signatures** (`dspy/signatures/`) - Define structured I/O schemas (e.g., "question -> answer")
+2. **Modules** (`dspy/primitives/module.py`) - Base class for all DSPy components
+3. **Predictors** (`dspy/predict/`) - Implement various prompting strategies (Predict, ChainOfThought, ReAct)
+4. **Adapters** (`dspy/adapters/`) - Convert between signatures and LLM-specific formats
+5. **Clients** (`dspy/clients/`) - Handle LLM communication (OpenAI, Anthropic, local models)
+6. **Optimizers** (`dspy/teleprompt/`) - Improve prompts/weights (BootstrapFewShot, MIPRO, SIMBA)
+
+### Key Design Patterns
+
+**Module Composition**: All DSPy components inherit from `dspy.Module` and implement:
+- `__call__()` for synchronous execution
+- `acall()` for asynchronous execution
+- `forward()` method containing the main logic
+
+**Signature Processing**: The flow is:
+1. User defines signature (e.g., `"context, question -> answer"`)
+2. Signature parser creates structured fields with types/descriptions
+3. Adapter formats prompt based on signature and LLM requirements
+4. Client sends to LLM and receives response
+5. Adapter parses response back to structured output
+
+**Optimization Loop**: Optimizers work by:
+1. Collecting examples through bootstrapping or provided data
+2. Generating candidate prompts/demonstrations
+3. Evaluating performance with metrics
+4. Selecting best performing configurations
+
+### Important Implementation Details
+
+**Async Support**: Most modules support both sync and async execution. Always check if a module has `acall()` method before using it asynchronously.
+
+**Caching**: DSPy uses `diskcache` for caching LLM responses. Cache is stored in `~/.dspy/`.
+
+**Settings Management**: Global LM configuration via `dspy.settings.configure(lm=...)`. Context managers available for temporary settings.
+
+**Type Handling**: DSPy supports multimodal inputs (images, audio) through the adapter system. Check `dspy/adapters/types/` for supported types.
+
+## Common Development Patterns
+
+### Creating a New Predictor Module
+New predictors should:
+1. Inherit from `dspy.Module`
+2. Accept a signature in `__init__`
+3. Implement `forward()` method
+4. Use `dspy.Predict` or other primitives internally
+5. Support both sync and async if possible
+
+### Adding a New Optimizer
+Optimizers should:
+1. Inherit from `teleprompt.Teleprompter`
+2. Implement `compile()` method
+3. Return an optimized copy of the input module
+4. Use `dspy.evaluate` utilities for scoring
+
+### Working with Adapters
+When modifying adapters:
+1. Check `dspy/adapters/base_adapter.py` for the interface
+2. Ensure compatibility with all output formats (Chat, JSON, XML)
+3. Handle both single and batch predictions
+4. Preserve streaming capabilities where applicable
+
+## Testing Conventions
+
+- Unit tests mirror source structure in `tests/`
+- Use pytest fixtures for common setups
+- Mock LLM calls when testing logic
+- Integration tests should use real models sparingly
+- Reliability tests in `tests/reliability/` for complex scenarios
+
+## Important Notes
+
+- Always preserve backward compatibility when modifying core modules
+- Signature syntax is fundamental - changes affect entire ecosystem
+- Optimizers should be model-agnostic when possible
+- Cache invalidation is handled automatically for most changes
+- Documentation in `docs/` uses MkDocs - preview with `mkdocs serve`
