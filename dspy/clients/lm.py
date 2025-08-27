@@ -263,6 +263,13 @@ class LM(BaseLM):
                 f"You may also consider increasing the temperature (currently {self.kwargs['temperature']}) "
                 " if the reason for truncation is repetition."
             )
+    
+    def raw_chat(self, **kwargs) -> dict:
+        """
+        Provider pass-through returning raw dict with logprobs+echo.
+        """
+        # Direct pass-through to litellm completion
+        return litellm.completion(**kwargs)
 
 
 def _get_stream_completion_fn(
