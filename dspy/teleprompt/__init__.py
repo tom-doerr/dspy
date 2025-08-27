@@ -2,6 +2,7 @@ from dspy.teleprompt.avatar_optimizer import AvatarOptimizer
 from dspy.teleprompt.bettertogether import BetterTogether
 from dspy.teleprompt.bootstrap import BootstrapFewShot
 from dspy.teleprompt.bootstrap_finetune import BootstrapFinetune
+from dspy.teleprompt.bootstrap_trace import bootstrap_trace_data
 from dspy.teleprompt.copro_optimizer import COPRO
 from dspy.teleprompt.ensemble import Ensemble
 from dspy.teleprompt.infer_rules import InferRules
@@ -32,4 +33,5 @@ __all__ = [
     "InferRules",
     "SIMBA",
     "SIMBAT",
+    "bootstrap_trace_data",
 ]
