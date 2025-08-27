@@ -136,31 +136,46 @@ When modifying adapters:
 - Usage: `--optimizer simbat --tail-eval-size 128`
 - Requires Python 3.11+
 
-### TFLL Metric (In Progress)
+### TFLL Metric (Completed)
 - Location: `dspy/metrics/tfll.py`
 - Teacher-Forced Log-Likelihood metric
 - One raw API call with echo+logprobs
 - For metric-only optimization
+- Supports margin calculation (TFLL-M)
+- Generates feedback for GEPA optimization
 
-## TFLL Implementation Plan
+## TFLL Implementation Details
 
-### 1. Metric Class Features
-- `TFLLMetric` class that renders messages with gold label teacher-forced
-- Single raw API call with `echo+logprobs`
-- Returns mean log-prob (optionally + top-k margin for TFLL-M)
-- Optional feedback text generation for GEPA optimization
+### Files Added/Modified
+- `dspy/metrics/tfll.py` - Complete TFLL metric implementation
+- `dspy/metrics/__init__.py` - Exports TFLLMetric
+- `dspy/clients/lm.py` - Added `raw_chat()` method
+- `dspy/utils/metric_only.py` - NullLM and metric_only_mode context
 
-### 2. Optimizer Integration Options
-- Option A: Add `metric_only=True` flag to optimizers
-- Option B: NullLM context manager for drop-in support
-- Skip program.forward() calls during optimization
+### Usage Example
+```python
+from dspy.metrics.tfll import TFLLMetric
+from dspy.utils.metric_only import metric_only_mode
+import dspy
 
-### 3. LM Raw Interface
-- Add `raw_chat()` method to LM class
-- Pass through provider logprobs/echo
-- Returns raw dict with choices[0].logprobs.prompt
+# Setup TFLL metric
+lm = dspy.settings.lm
+metric = TFLLMetric(
+    raw_chat=lm.raw_chat,
+    model="openrouter/google/gemini-2.5-flash",
+    use_margin=True,
+    margin_alpha=0.5,
+    top_logprobs=5
+)
 
-### 4. Configuration & Defaults
-- `use_margin=True`, `margin_alpha=0.5`, `top_logprobs=5`
-- Subsample 50-200 examples per round
-- Cache (candidate_id, example_id) → score
+# Use with optimizer (no generation costs)
+with metric_only_mode():
+    best = optimizer.optimize(program, trainset, metric)
+```
+
+### Key Features
+- **Zero generation cost**: Uses teacher-forced labels with echo mode
+- **Single API call**: One request per example for scoring
+- **Margin support**: Optional TFLL-M with top-k alternatives
+- **GEPA compatible**: Provides textual feedback for reflection
+- **Drop-in integration**: Works with all existing optimizers
