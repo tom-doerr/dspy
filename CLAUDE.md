@@ -179,3 +179,55 @@ with metric_only_mode():
 - **Margin support**: Optional TFLL-M with top-k alternatives
 - **GEPA compatible**: Provides textual feedback for reflection
 - **Drop-in integration**: Works with all existing optimizers
+
+## TFLL-Based Reinforcement Learning Concept
+
+### Overview
+Using TFLL for policy gradient optimization by computing log probabilities efficiently and applying discounted rewards to optimize DSPy prompts through RL.
+
+### Key Ideas
+1. **Policy Gradient**: Use TFLL echo+logprobs for log P(action|state) without generation cost
+2. **Discounted Rewards**: R_t = Σ(γ^k * r_{t+k}) for temporal credit assignment
+3. **Policy Update**: ∇θ J(θ) = E[R_t * ∇θ log π(a_t|s_t)]
+4. **Advantage**: (R_t - baseline) * avg_logprob_change to reduce variance
+
+### Implementation Strategy
+```python
+# Conceptual RL optimizer using TFLL
+class TFLLReinforcementOptimizer:
+    def optimize(self, module, episodes, reward_fn):
+        # Collect trajectories
+        trajectories = []
+        for episode in episodes:
+            actions = module(episode.state)
+            logprobs = tfll_metric.get_logprobs(actions, episode.state)
+            rewards = reward_fn(actions, episode)
+            trajectories.append((actions, logprobs, rewards))
+        
+        # Compute discounted returns
+        returns = compute_discounted_returns(trajectories, gamma=0.99)
+        
+        # Estimate policy gradient
+        for traj, ret in zip(trajectories, returns):
+            avg_logprob_change = ret * traj.logprobs
+            if avg_logprob_change > threshold:
+                accept_prompt_edit(module, traj.actions)
+```
+
+### Advantages Over Traditional Optimization
+- **Efficient Evaluation**: No generation for scoring
+- **Temporal Credit**: Handles sequential decision making
+- **Variance Reduction**: Uses baselines and advantage estimation
+- **Direct Policy Opt**: Updates prompts based on expected rewards
+
+### Potential Applications
+1. **Multi-step Reasoning**: Optimize chains of thought with delayed rewards
+2. **Interactive Systems**: Learn from user feedback over conversations
+3. **Task Composition**: Optimize pipelines of DSPy modules jointly
+4. **Online Learning**: Continuously improve from deployment feedback
+
+### Research Directions
+- Combine with existing optimizers (MIPRO, SIMBA) for hybrid approaches
+- Use as evaluation metric for prompt stability under policy shifts
+- Implement PPO-style clipping for stable updates
+- Explore different advantage estimation methods (GAE, TD(λ))
