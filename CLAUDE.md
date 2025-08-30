@@ -180,54 +180,108 @@ with metric_only_mode():
 - **GEPA compatible**: Provides textual feedback for reflection
 - **Drop-in integration**: Works with all existing optimizers
 
-## TFLL-Based Reinforcement Learning Concept
+## TFLL-Based Reinforcement Learning (Implemented)
 
 ### Overview
-Using TFLL for policy gradient optimization by computing log probabilities efficiently and applying discounted rewards to optimize DSPy prompts through RL.
+TFLL-based RL optimizer implemented for policy gradient optimization, using Teacher-Forced Log-Likelihood for efficient prompt evaluation without generation costs.
 
-### Key Ideas
-1. **Policy Gradient**: Use TFLL echo+logprobs for log P(action|state) without generation cost
-2. **Discounted Rewards**: R_t = Σ(γ^k * r_{t+k}) for temporal credit assignment
-3. **Policy Update**: ∇θ J(θ) = E[R_t * ∇θ log π(a_t|s_t)]
-4. **Advantage**: (R_t - baseline) * avg_logprob_change to reduce variance
+### Implementation Details
 
-### Implementation Strategy
+#### Files Added
+- `dspy/teleprompt/tfll_rl.py` - TFLLRLOptimizer with policy gradient optimization
+- `dspy/teleprompt/tfll_rl_env.py` - OpenAI Gym-compatible environment wrapper
+- `tests/teleprompt/test_tfll_rl.py` - Comprehensive test suite
+
+#### Key Components
+
+**TFLLRLOptimizer**
+- Policy gradient optimization using TFLL scoring
+- Trajectory collection with discounted rewards (γ parameter)
+- GAE advantage estimation with baseline
+- Action space: prompt modifications (add COT, step-by-step, etc.)
+- **Acceptance Policy**: Accepts modifications when:
+  - Policy gradient signal (advantage * logprob) is positive
+  - No additional evaluation needed - uses trajectory data
+- Supports both standard DSPy and Gym interfaces
+
+**DSPyEnvironment**
+- OpenAI Gym-compatible interface
+- State: prompt features (length, keywords, current score)
+- Actions: prompt modifications
+- Rewards: TFLL score improvements + optional shaping
+- Supports batch environments for parallel collection
+
+**Usage Example**
 ```python
-# Conceptual RL optimizer using TFLL
-class TFLLReinforcementOptimizer:
-    def optimize(self, module, episodes, reward_fn):
-        # Collect trajectories
-        trajectories = []
-        for episode in episodes:
-            actions = module(episode.state)
-            logprobs = tfll_metric.get_logprobs(actions, episode.state)
-            rewards = reward_fn(actions, episode)
-            trajectories.append((actions, logprobs, rewards))
-        
-        # Compute discounted returns
-        returns = compute_discounted_returns(trajectories, gamma=0.99)
-        
-        # Estimate policy gradient
-        for traj, ret in zip(trajectories, returns):
-            avg_logprob_change = ret * traj.logprobs
-            if avg_logprob_change > threshold:
-                accept_prompt_edit(module, traj.actions)
+from dspy.teleprompt import TFLLRLOptimizer
+from dspy.metrics.tfll import TFLLMetric
+
+# Setup
+metric = TFLLMetric(
+    raw_chat=lm.raw_chat,
+    model="together/Qwen/Qwen2.5-Coder-32B-Instruct"
+)
+
+# Standard DSPy interface
+optimizer = TFLLRLOptimizer(
+    metric=metric,
+    gamma=0.99,
+    num_updates=100,
+    episodes_per_update=10
+)
+optimized = optimizer.compile(program, trainset=trainset)
+
+# Gym interface
+optimizer = TFLLRLOptimizer(metric=metric, use_gym_interface=True)
+env = optimizer.make_env(program, trainset)
+for episode in range(100):
+    obs = env.reset()
+    done = False
+    while not done:
+        action = env.action_space.sample()
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
 ```
 
-### Advantages Over Traditional Optimization
-- **Efficient Evaluation**: No generation for scoring
-- **Temporal Credit**: Handles sequential decision making
-- **Variance Reduction**: Uses baselines and advantage estimation
-- **Direct Policy Opt**: Updates prompts based on expected rewards
+### Model Support for Logprobs
 
-### Potential Applications
-1. **Multi-step Reasoning**: Optimize chains of thought with delayed rewards
-2. **Interactive Systems**: Learn from user feedback over conversations
-3. **Task Composition**: Optimize pipelines of DSPy modules jointly
-4. **Online Learning**: Continuously improve from deployment feedback
+**Recommended Model**: For getting prompt logprobs efficiently, use:
+- **Qwen/Qwen2.5-Coder-32B-Instruct** via Together AI API
+- Model string: `"together/Qwen/Qwen2.5-Coder-32B-Instruct"`
+- Supports echo mode with logprobs for TFLL scoring
+- Good balance of cost and performance
 
-### Research Directions
-- Combine with existing optimizers (MIPRO, SIMBA) for hybrid approaches
-- Use as evaluation metric for prompt stability under policy shifts
-- Implement PPO-style clipping for stable updates
-- Explore different advantage estimation methods (GAE, TD(λ))
+### Features
+- **Zero generation cost**: Uses TFLL echo mode for scoring
+- **Gym compatibility**: Works with standard RL libraries
+- **Batch processing**: Parallel environment support
+- **Flexible baselines**: Mean, moving average, or custom
+- **Action space**: 9 predefined prompt modifications
+- **Reward shaping**: Optional complexity penalties and bonuses
+- **Policy Gradient Acceptance**: Actions weighted by advantage * logprob
+  - Positive PG signal → accept modification
+  - Negative PG signal → reject modification
+  - No need to evaluate each modification separately
+  - Efficient: uses existing trajectory data
+
+### Advantages
+- Efficient policy evaluation without generation
+- Handles sequential decision making naturally
+- Compatible with existing RL algorithms (PPO, A2C)
+- Online learning capability
+- Variance reduction through baselines
+
+### Future Enhancements
+- PPO-style clipping for stability
+- Custom value networks for better baselines
+- Learnable action embeddings
+- Integration with other DSPy optimizers
+- Curriculum learning support
+
+### Testing & Experience Replay
+- Created CharCountEnv test environment (no LLM calls needed)
+- Added replay buffer (10K experiences) for sample efficiency
+- Stores trajectory data for reuse across updates
+- SimpleMetric test env: fixed 50-char target, timestamp inputs
+- Optimized for single experience collection per update
+- Uses N most recent experiences for policy evaluation

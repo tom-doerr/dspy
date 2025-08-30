@@ -13,6 +13,7 @@ from dspy.teleprompt.simba import SIMBA
 from dspy.teleprompt.simbat import SIMBAT
 from dspy.teleprompt.teleprompt import Teleprompter
 from dspy.teleprompt.teleprompt_optuna import BootstrapFewShotWithOptuna
+from dspy.teleprompt.tfll_rl import TFLLRLOptimizer
 from dspy.teleprompt.vanilla import LabeledFewShot
 
 from .gepa.gepa import GEPA
@@ -33,5 +34,6 @@ __all__ = [
     "InferRules",
     "SIMBA",
     "SIMBAT",
+    "TFLLRLOptimizer",
     "bootstrap_trace_data",
 ]
