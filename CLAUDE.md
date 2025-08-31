@@ -219,7 +219,7 @@ from dspy.metrics.tfll import TFLLMetric
 # Setup
 metric = TFLLMetric(
     raw_chat=lm.raw_chat,
-    model="together/Qwen/Qwen2.5-Coder-32B-Instruct"
+    model="together_ai/Qwen/Qwen2.5-Coder-32B-Instruct"
 )
 
 # Standard DSPy interface
@@ -247,7 +247,7 @@ for episode in range(100):
 
 **Recommended Model**: For getting prompt logprobs efficiently, use:
 - **Qwen/Qwen2.5-Coder-32B-Instruct** via Together AI API
-- Model string: `"together/Qwen/Qwen2.5-Coder-32B-Instruct"`
+- Model string: `"together_ai/Qwen/Qwen2.5-Coder-32B-Instruct"`
 - Supports echo mode with logprobs for TFLL scoring
 - Good balance of cost and performance
 

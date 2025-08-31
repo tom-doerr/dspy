@@ -15,18 +15,18 @@ if not os.getenv("TOGETHER_API_KEY"):
     print("ERROR: Set TOGETHER_API_KEY env variable")
     sys.exit(1)
 
-# Setup Together API
+# Setup Together API (use together_ai/ prefix for litellm)
 lm = dspy.LM(
-    model="together/Qwen/Qwen2.5-Coder-32B-Instruct",
+    model="together_ai/Qwen/Qwen2.5-Coder-32B-Instruct",
     api_key=os.getenv("TOGETHER_API_KEY"),
     max_tokens=50
 )
 dspy.settings.configure(lm=lm)
 
-# Create REAL TFLL metric
+# Create REAL TFLL metric (use same model string)
 tfll_metric = TFLLMetric(
     raw_chat=lm.raw_chat,
-    model="together/Qwen/Qwen2.5-Coder-32B-Instruct"
+    model="together_ai/Qwen/Qwen2.5-Coder-32B-Instruct"
 )
 
 # Simple task
