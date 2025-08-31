@@ -231,17 +231,17 @@ class TFLLRLOptimizer(Teleprompter):
             # Apply action to get new program
             new_program = self._modify_prompt(current_program, action)
             
-            # Evaluate with TFLL metric
+            # Evaluate with TFLL metric (REAL API calls)
             reward = 0.0
-            logprob = -1.0  # Default negative logprob
+            logprob = 0.0
             
             with metric_only_mode():
                 for example in examples[:5]:  # Sample a few examples
                     if self.metric:
+                        # TFLL metric returns actual log probabilities
                         score = self.metric(example, new_program)
                         reward += score
-                        # Convert to logprob - for simple metrics use small value
-                        logprob = max(-5.0, score / 10.0) if score < 0 else -0.1
+                        logprob += score  # TFLL score IS the logprob
                         
             reward /= min(5, len(examples))
             logprob /= min(5, len(examples))
@@ -419,7 +419,7 @@ class TFLLRLOptimizer(Teleprompter):
         logger.info(f"Starting TFLL RL optimization with {self.num_updates} updates")
         
         if not self.metric:
-            raise ValueError("TFLL metric must be provided")
+            raise ValueError("TFLLMetric instance must be provided for real API calls")
             
         current_program = copy.deepcopy(student)
         
