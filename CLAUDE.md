@@ -283,5 +283,7 @@ for episode in range(100):
 - Added replay buffer (10K experiences) for sample efficiency
 - Stores trajectory data for reuse across updates
 - SimpleMetric test env: fixed 50-char target, timestamp inputs
-- Optimized for single experience collection per update
+- Optimized for single experience collection per update  
 - Uses N most recent experiences for policy evaluation
+- **FIXED**: Single-step updates now working - accepts improvements immediately
+- Modifications accepted when reward > 0 (9 accepts in 20 steps test run)

@@ -12,6 +12,7 @@ from dspy.teleprompt.teleprompt import Teleprompter
 from dspy.metrics.tfll import TFLLMetric
 from dspy.utils.metric_only import metric_only_mode
 from dspy.evaluate import Evaluate
+from dspy.teleprompt.experience_prompt_updater import RuleBasedUpdater
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,9 @@ class TFLLRLOptimizer(Teleprompter):
         self.baseline_value = 0.0
         self.baseline_alpha = 0.1  # For moving average
         
+        # Experience-based prompt updater
+        self.prompt_updater = RuleBasedUpdater()
+        
         # Action space: possible prompt modifications
         self.action_space = [
             "add_chain_of_thought",
@@ -229,15 +233,15 @@ class TFLLRLOptimizer(Teleprompter):
             
             # Evaluate with TFLL metric
             reward = 0.0
-            logprob = 0.0
+            logprob = -1.0  # Default negative logprob
             
             with metric_only_mode():
                 for example in examples[:5]:  # Sample a few examples
                     if self.metric:
                         score = self.metric(example, new_program)
                         reward += score
-                        # TFLL score is already a log probability
-                        logprob += score
+                        # Convert to logprob - for simple metrics use small value
+                        logprob = max(-5.0, score / 10.0) if score < 0 else -0.1
                         
             reward /= min(5, len(examples))
             logprob /= min(5, len(examples))
@@ -419,28 +423,41 @@ class TFLLRLOptimizer(Teleprompter):
             
         current_program = copy.deepcopy(student)
         
+        # Track recent experiences for prompt updater
+        recent_experiences = []
+        
         for update in range(self.num_updates):
-            trajectories = []
+            # Single-step update
+            # Sample just 1-2 examples for efficiency
+            batch_size = min(2, len(trainset))
+            batch = self.rng.sample(trainset, batch_size)
             
-            # Collect trajectories
-            for episode in range(self.episodes_per_update):
-                # Sample just 1-2 examples for efficiency
-                batch_size = min(2, len(trainset))
-                batch = self.rng.sample(trainset, batch_size)
-                
-                # Collect trajectory
-                trajectory = self._collect_trajectory(current_program, batch)
-                trajectories.append(trajectory)
-                
-                # Add to replay buffer if enabled
-                if self.replay_buffer is not None:
-                    self.replay_buffer.add_trajectory(trajectory, self.gamma, self.lam)
-                
-            # Policy update (use buffer if available and has enough data)
-            if self.replay_buffer and len(self.replay_buffer) > 100:
-                current_program = self._policy_update_with_buffer(trajectories, current_program)
-            else:
-                current_program = self._policy_update(trajectories, current_program)
+            # Get current state and select action
+            state = self._get_state(current_program, batch[0] if batch else None)
+            action = self._select_action(state)
+            
+            # Try modification
+            new_program = self._modify_prompt(current_program, action)
+            
+            # Evaluate improvement
+            reward = 0.0
+            with metric_only_mode():
+                for ex in batch:
+                    if self.metric:
+                        old_s = self.metric(ex, current_program)
+                        new_s = self.metric(ex, new_program)
+                        reward += (new_s - old_s)
+            reward /= len(batch)
+            
+            # Accept if improved
+            if reward > 0:
+                logger.info(f"Accept '{action}': reward={reward:.4f}")
+                current_program = new_program
+            
+            # Store experience
+            recent_experiences.append((state, action, reward))
+            if len(recent_experiences) > 10:
+                recent_experiences.pop(0)
             
             # Log buffer statistics
             if self.replay_buffer and update % 5 == 0:
