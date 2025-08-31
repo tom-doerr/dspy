@@ -458,7 +458,12 @@ class TFLLRLOptimizer(Teleprompter):
             
             # Accept based on policy gradient
             if policy_gradient > 0:
+                old_inst = getattr(current_program.signature, 'instructions', '')
+                new_inst = getattr(new_program.signature, 'instructions', '')
                 logger.info(f"Accept '{action}': PG={policy_gradient:.4f}, reward={reward:.4f}")
+                if old_inst != new_inst:
+                    logger.info(f"  Search: '{old_inst}'")
+                    logger.info(f"  Replace: '{new_inst}'")
                 current_program = new_program
                 # Update baseline
                 self.baseline_value = (1 - self.baseline_alpha) * self.baseline_value + self.baseline_alpha * reward

@@ -1,6 +1,8 @@
 """Simple env: output 50 chars."""
 import time
 import numpy as np
+import argparse
+import logging
 
 TARGET = 50
 
@@ -21,7 +23,7 @@ class SimpleMetric:
         return r
 
 
-def test_with_timestamps():
+def test_with_timestamps(verbose=False, num_updates=20, show_search_replace=False):
     """Test using timestamps as unique inputs."""
     import time
     from dspy.teleprompt.tfll_rl import TFLLRLOptimizer
@@ -48,20 +50,54 @@ def test_with_timestamps():
         time.sleep(0.001)  # Ensure unique timestamps
     
     # Create optimizer
+    if verbose:
+        logging.basicConfig(level=logging.INFO)
+    
     optimizer = TFLLRLOptimizer(
         metric=metric,
         episodes_per_update=1,
-        num_updates=20,
+        num_updates=num_updates,
         use_experience_replay=True
     )
     
-    # Optimize
+    # Optimize with visualization
     program = SimpleProgram()
+    
+    if verbose or show_search_replace:
+        print("\n" + "="*60)
+        print("TFLL RL OPTIMIZATION PROCESS")
+        print("="*60)
+        print(f"Target: {TARGET} characters")
+        print(f"Updates: {num_updates}")
+        print(f"Initial prompt: '{program.signature.instructions}'")
+        print("="*60 + "\n")
+    
     optimized = optimizer.compile(program, trainset=trainset)
     
-    print(f"Final metric calls: {metric.calls}")
+    if verbose or show_search_replace:
+        print("\n" + "="*60)
+        print(f"Final prompt: '{optimized.signature.instructions}'")
+        print(f"Total metric calls: {metric.calls}")
+        print("="*60)
+    else:
+        print(f"Final metric calls: {metric.calls}")
+    
     return optimized
 
 
 if __name__ == "__main__":
-    test_with_timestamps()
+    parser = argparse.ArgumentParser(description="Test TFLL RL optimizer")
+    parser.add_argument("-v", "--verbose", action="store_true", 
+                        help="Show detailed output")
+    parser.add_argument("-n", "--num-updates", type=int, default=20,
+                        help="Number of optimization updates")
+    parser.add_argument("-s", "--show-search-replace", action="store_true",
+                        help="Show search/replace blocks")
+    
+    args = parser.parse_args()
+    
+    test_with_timestamps(
+        verbose=args.verbose,
+        num_updates=args.num_updates,
+        show_search_replace=args.show_search_replace
+    )
