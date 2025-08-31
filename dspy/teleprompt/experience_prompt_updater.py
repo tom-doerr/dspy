@@ -20,7 +20,12 @@ class ExperiencePromptUpdater(dspy.Module):
     def forward(self, experiences):
         """Generate search/replace from experiences."""
         exp_text = []
-        for obs, action, reward in experiences:
+        for exp in experiences:
+            if len(exp) == 4:  # Has policy gradient
+                obs, action, reward, pg = exp
+            else:
+                obs, action, reward = exp
+                pg = 0
             exp_text.append(f"Action: {action}, Reward: {reward:.2f}")
         
         result = self.predictor(experiences="\n".join(exp_text))

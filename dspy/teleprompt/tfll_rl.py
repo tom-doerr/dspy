@@ -439,25 +439,38 @@ class TFLLRLOptimizer(Teleprompter):
             # Try modification
             new_program = self._modify_prompt(current_program, action)
             
-            # Evaluate improvement
-            reward = 0.0
+            # Evaluate improvement using logprobs
+            old_logprob = 0.0
+            new_logprob = 0.0
             with metric_only_mode():
                 for ex in batch:
                     if self.metric:
-                        old_s = self.metric(ex, current_program)
-                        new_s = self.metric(ex, new_program)
-                        reward += (new_s - old_s)
-            reward /= len(batch)
+                        # Get average token logprobs
+                        old_logprob += self.metric(ex, current_program)
+                        new_logprob += self.metric(ex, new_program)
+            old_logprob /= len(batch)
+            new_logprob /= len(batch)
             
-            # Accept if improved
-            if reward > 0:
-                logger.info(f"Accept '{action}': reward={reward:.4f}")
+            # Compute reward and policy gradient
+            reward = new_logprob - old_logprob
+            advantage = reward - self.baseline_value
+            policy_gradient = new_logprob * advantage
+            
+            # Accept based on policy gradient
+            if policy_gradient > 0:
+                logger.info(f"Accept '{action}': PG={policy_gradient:.4f}, reward={reward:.4f}")
                 current_program = new_program
+                # Update baseline
+                self.baseline_value = (1 - self.baseline_alpha) * self.baseline_value + self.baseline_alpha * reward
             
-            # Store experience
-            recent_experiences.append((state, action, reward))
+            # Store experience with policy gradient
+            recent_experiences.append((state, action, reward, policy_gradient))
             if len(recent_experiences) > 10:
                 recent_experiences.pop(0)
+            
+            # Add to replay buffer if enabled
+            if self.replay_buffer:
+                self.replay_buffer.add(state, action, reward, new_logprob, advantage)
             
             # Log buffer statistics
             if self.replay_buffer and update % 5 == 0:
