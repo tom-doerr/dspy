@@ -287,3 +287,29 @@ for episode in range(100):
 - Uses N most recent experiences for policy evaluation
 - **FIXED**: Single-step updates now working - accepts improvements immediately
 - Modifications accepted when reward > 0 (9 accepts in 20 steps test run)
+
+### Policy Gradient Scoring Design
+
+**Issue**: Rewards treated as discrete values
+**Fix Needed**: Use avg token logprobs to weight actions
+- Score = avg_logprob * (reward - baseline)
+- Accept based on weighted policy gradient signal
+
+**How it works**:
+1. Get avg token logprob from TFLL for each modification
+2. Logprob = P(action|state) - how likely this edit is
+3. Advantage = reward - baseline
+4. Policy gradient = avg_logprob * advantage  
+5. Accept if policy gradient > threshold
+
+Weights rewards by modification likelihood.
+
+**Implementation**:
+```python
+# Get avg logprobs from TFLL
+old_logprob = tfll_metric(batch, current_program)
+new_logprob = tfll_metric(batch, new_program)
+reward = new_logprob - old_logprob
+policy_grad = new_logprob * (reward - baseline)
+if policy_grad > 0: accept()
+```
