@@ -16,6 +16,9 @@ pytest
 # Run specific module tests
 pytest tests/predict
 
+# Run StochasticBootstrapBestOfN focused suite
+pytest tests/predict/test_stochastic_bootstrap_best_of_n.py
+
 # With uv (recommended)
 uv run pytest tests/predict
 
@@ -182,6 +185,12 @@ with metric_only_mode():
 - **Margin support**: Optional TFLL-M with top-k alternatives
 - **GEPA compatible**: Provides textual feedback for reflection
 - **Drop-in integration**: Works with all existing optimizers
+
+### StochasticBootstrapBestOfN (New)
+- Location: `dspy/predict/stochastic_bootstrap_best_of_n.py`
+- Implements Thompson-sampled few-shot selection with replay memory
+- Uses normalized rewards for demo gating and maintains per-call slate size
+- Run targeted tests via `pytest tests/predict/test_stochastic_bootstrap_best_of_n.py`
 
 ## TFLL-Based Reinforcement Learning (Implemented)
 

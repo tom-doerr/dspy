@@ -145,7 +145,6 @@ class StochasticBootstrapBestOfN(DSPyModule):
 
         best_pred, best_score, best_indices = None, -math.inf, []
         errors: list[str] = []
-        success_scores: list[float] = []
         remaining_failures = self.fail_count
         stop = False
         inputs = {k: v for k, v in kwargs.items() if k != "config"}
@@ -157,8 +156,13 @@ class StochasticBootstrapBestOfN(DSPyModule):
                 yield
                 return
 
+            named = getattr(module, "named_predictors", None)
+            if not callable(named):
+                yield
+                return
+
             snapshots = []
-            for _, predictor in module.named_predictors():
+            for _, predictor in named():
                 if not hasattr(predictor, "config"):
                     continue
                 snapshots.append((predictor, dict(predictor.config)))
@@ -175,8 +179,11 @@ class StochasticBootstrapBestOfN(DSPyModule):
             try:
                 module = self._module_with_demos(demo_examples)
                 config = dict(base_config)
-                config.setdefault("temperature", 1.0)
+                temp = float(config.get("temperature", 0.0) or 0.0)
+                if temp <= 0.0:
+                    config["temperature"] = 1.0
                 config["rollout_id"] = rollout_id
+
                 with temporary_predictor_config(module, config):
                     try:
                         pred = module(**inputs, config=config)
@@ -186,7 +193,9 @@ class StochasticBootstrapBestOfN(DSPyModule):
                         else:
                             raise
                 score = float(self.reward_fn(kwargs, pred))
-                if not math.isfinite(score):
+                if math.isfinite(score):
+                    self._observe_score(score)
+                else:
                     score = -math.inf
                 return ("ok", pred, score, idxs)
             except Exception as exc:  # pragma: no cover - surfaced via fail_count
@@ -203,7 +212,6 @@ class StochasticBootstrapBestOfN(DSPyModule):
                 remaining_failures -= 1
                 return
             _, pred, score, idxs = result
-            success_scores.append(score)
             if best_pred is None or score > best_score:
                 best_pred, best_score, best_indices = pred, score, idxs
             if self.threshold is not None and score >= self.threshold:
@@ -237,7 +245,7 @@ class StochasticBootstrapBestOfN(DSPyModule):
         norm = self._normalise_score(best_score)
         if best_indices:
             self._credit(mem, best_indices, best_score, norm)
-        if best_score >= self.min_reward_to_store:
+        if norm >= self.min_reward_to_store:
             demo = self._build_demo(inputs, best_pred)
             if demo is not None:
                 self._store(mem, demo, norm)
@@ -321,5 +329,14 @@ class StochasticBootstrapBestOfN(DSPyModule):
         if not math.isfinite(score):
             return 0.0
         if self._score_max == self._score_min:
-            return 1.0
+            # Avoid flooding initial demos with perfect priors.
+            return 0.5
         return max(0.0, min(1.0, (score - self._score_min) / (self._score_max - self._score_min)))
+
+    def _observe_score(self, score: float) -> None:
+        if not math.isfinite(score):
+            return
+        if score < self._score_min:
+            self._score_min = score
+        if score > self._score_max:
+            self._score_max = score

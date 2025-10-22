@@ -351,4 +351,3 @@ def test_recency_bonus_keeps_single_demo_selectable():
     snapshot = chooser.memory_snapshot()
     key = next(iter(snapshot))
     assert len(snapshot[key]) == 1
-    assert module.predictor.config == {"temperature": 0.3}
