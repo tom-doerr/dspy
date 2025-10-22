@@ -49,9 +49,9 @@ class StochasticBootstrapBestOfN(DSPyModule):
         this value. If left ``None`` the module returns the best reward after all attempts.
     fail_count:
         Maximum number of exceptions allowed across the N attempts before re-raising the last error. Defaults to ``N``.
-    k:
-        Maximum number of demos to sample for each candidate. The effective draw is ``min(k, len(memory))``.
     max_bootstrapped_demos:
+        Maximum number of demos to sample for each candidate. The effective draw is ``min(max_bootstrapped_demos, len(memory))``.
+    replay_buffer_size:
         Replay-buffer capacity per task key. When the buffer is full, the lowest-scoring demo (posterior mean) is evicted.
     per_key_memory:
         If ``True`` (default) maintain independent buffers per (module signature, input fields) key; otherwise share a global memory.
@@ -78,6 +78,8 @@ class StochasticBootstrapBestOfN(DSPyModule):
       the internal state.
     * Replay memories are keyed by ``module.signature`` (or class name) plus the sorted input field names unless
       ``per_key_memory=False``.
+    * The prompt for any single candidate contains at most ``max_bootstrapped_demos`` demonstrations even if the replay
+      buffer holds more.
     """
     def __init__(
         self,
@@ -87,8 +89,8 @@ class StochasticBootstrapBestOfN(DSPyModule):
         *,
         threshold: float | None = None,
         fail_count: int | None = None,
-        k: int = 4,
-        max_bootstrapped_demos: int = 32,
+        max_bootstrapped_demos: int = 4,
+        replay_buffer_size: int = 64,
         per_key_memory: bool = True,
         recency_weight: float = 0.2,
         recency_tau: float = 50.0,
@@ -104,8 +106,8 @@ class StochasticBootstrapBestOfN(DSPyModule):
         self.N = int(N)
         self.threshold = threshold
         self.fail_count = int(fail_count if fail_count is not None else N)
-        self.k = int(k)
         self.max_bootstrapped_demos = int(max_bootstrapped_demos)
+        self.replay_buffer_size = int(replay_buffer_size)
         self.per_key_memory = per_key_memory
         self.recency_weight = float(recency_weight)
         self.recency_tau = float(recency_tau)
@@ -120,6 +122,17 @@ class StochasticBootstrapBestOfN(DSPyModule):
         self._rollout = 0
         self._score_min = float("inf")
         self._score_max = float("-inf")
+
+    def reset_memory(self, key: str | None = None) -> None:
+        """Clear stored demos globally or for a specific task key."""
+        if key is None:
+            self._memory.clear()
+        else:
+            self._memory.pop(key, None)
+
+    def memory_snapshot(self) -> dict[str, list[dspy.Example]]:
+        """Return a shallow copy of the replay buffer keyed by task signature."""
+        return {k: [record.example for record in records] for k, records in self._memory.items()}
 
     def forward(self, **kwargs):
         """Run up to ``N`` candidates with independent demo samples and return the highest-reward prediction."""
@@ -239,9 +252,9 @@ class StochasticBootstrapBestOfN(DSPyModule):
         return self.module.reset_copy()
 
     def _sample_indices(self, mem: list[DemoRecord]) -> list[int]:
-        if not mem or self.k <= 0:
+        if not mem or self.max_bootstrapped_demos <= 0:
             return []
-        size = min(self.k, len(mem))
+        size = min(self.max_bootstrapped_demos, len(mem))
         scored = []
         for idx, record in enumerate(mem):
             theta = self._rng.betavariate(record.alpha, record.beta)
@@ -270,7 +283,7 @@ class StochasticBootstrapBestOfN(DSPyModule):
         alpha = 1.0 + self.initial_score_weight * norm
         beta = 1.0 + self.initial_score_weight * (1.0 - norm)
         mem.append(DemoRecord(example=demo, alpha=alpha, beta=beta, prior=norm, last_used_step=self._step))
-        if len(mem) > self.max_bootstrapped_demos:
+        if len(mem) > self.replay_buffer_size:
             worst = min(range(len(mem)), key=lambda i: mem[i].alpha / (mem[i].alpha + mem[i].beta + 1e-9))
             mem.pop(worst)
 
