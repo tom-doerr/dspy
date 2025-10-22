@@ -296,6 +296,15 @@ class LM(BaseLM):
         """
         Provider pass-through returning raw dict with logprobs+echo.
         """
+        # Use text_completion for Together with prompt
+        if "prompt" in kwargs:
+            resp = litellm.text_completion(**kwargs)
+            # Convert to dict if needed
+            if hasattr(resp, "model_dump"):
+                return resp.model_dump()
+            elif hasattr(resp, "__dict__"):
+                return resp.__dict__
+            return resp
         # Direct pass-through to litellm completion
         return litellm.completion(**kwargs)
 

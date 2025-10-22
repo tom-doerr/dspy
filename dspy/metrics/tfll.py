@@ -9,11 +9,26 @@ logger = logging.getLogger(__name__)
 
 START, END = "<<<ANS>>>", "<<<END>>>"
 
+def _ext_tog(r):
+    """Extract prompt logprobs from Together completions response."""
+    if "prompt" not in r: return None
+    # Together returns prompt as a single dict, not list
+    p = r["prompt"] if isinstance(r["prompt"], dict) else r["prompt"][0]
+    if "logprobs" not in p: return None
+    lp = []
+    tk = p["logprobs"].get("tokens", [])
+    tl = p["logprobs"].get("token_logprobs", [])
+    for t, l in zip(tk, tl):
+        lp.append({"token": t, "logprob": l})
+    return lp
+
 def _extract_label_prompt_tokens(raw: Dict[str, Any],
                                 start: str = START, end: str = END) -> List[Dict[str, Any]]:
     """Extract tokens within the label markers from prompt logprobs."""
     try:
-        if "choices" in raw and raw["choices"]:
+        # Try Together format first
+        logprobs = _ext_tog(raw)
+        if logprobs is None and "choices" in raw and raw["choices"]:
             choice = raw["choices"][0]
             
             # Try to get prompt logprobs (for echo=True responses)
@@ -25,34 +40,31 @@ def _extract_label_prompt_tokens(raw: Dict[str, Any],
                     logprobs = choice["logprobs"]["content"]
                 elif isinstance(choice["logprobs"], list):
                     logprobs = choice["logprobs"]
-            
-            if not logprobs:
-                logger.warning("No prompt logprobs found in response")
-                return []
-            
-            # Extract tokens within the label markers
-            span, buf, on = [], "", False
-            for item in logprobs:
-                if isinstance(item, dict):
-                    tok = item.get("token", "")
-                else:
-                    continue
-                    
-                buf += tok
-                if not on and start in buf:
-                    on = True
-                    buf = buf.split(start, 1)[1]
-                    continue
-                if on:
-                    span.append(item)
-                    if end in buf:
-                        break
-            
-            # Filter whitespace-only tokens for stability
-            return [t for t in span if t.get("token", "").strip()]
-        else:
-            logger.warning("Response missing expected 'choices' field")
+        
+        if not logprobs:
+            logger.warning("No prompt logprobs found in response")
             return []
+        
+        # Extract tokens within the label markers
+        span, buf, on = [], "", False
+        for item in logprobs:
+            if isinstance(item, dict):
+                tok = item.get("token", "")
+            else:
+                continue
+                
+            buf += tok
+            if not on and start in buf:
+                on = True
+                buf = buf.split(start, 1)[1]
+                continue
+            if on:
+                span.append(item)
+                if end in buf:
+                    break
+        
+        # Filter whitespace-only tokens for stability
+        return [t for t in span if t.get("token", "").strip()]
     except Exception as e:
         logger.warning(f"Error extracting label tokens: {e}")
         return []
@@ -92,6 +104,24 @@ class TFLLMetric:
     allow_max_tokens_zero: bool = True
     fixed_system: str = "Be concise."
     
+    def _messages_to_prompt(self, messages):
+        """Convert messages to prompt."""
+        parts = []
+        for msg in messages:
+            r = msg["role"]
+            c = msg["content"]
+            parts.append(f"{r.title()}: {c}")
+        return "\n\n".join(parts)
+    
+    def _build_kwargs(self, msgs):
+        if "together" in self.model.lower():
+            p = self._messages_to_prompt(msgs)
+            k = dict(model=self.model, prompt=p, echo=True, logprobs=1)
+        else:
+            k = dict(model=self.model, messages=msgs, echo=True, logprobs=True)
+        k["temperature"] = 0
+        return k
+    
     def render_messages(self, instructions: str, x: str, y: str):
         """Render the messages for the LLM call with teacher-forced label."""
         return [
@@ -102,14 +132,9 @@ class TFLLMetric:
     
     def _score_once(self, messages) -> Dict[str, float]:
         """Score a single example with one raw API call."""
-        kwargs = dict(
-            model=self.model,
-            messages=messages,
-            temperature=0,
-            echo=True,
-            logprobs=True,
-            top_logprobs=(self.top_logprobs if self.use_margin else 0)
-        )
+        kwargs = self._build_kwargs(messages)
+        if self.use_margin:
+            kwargs["top_logprobs"] = self.top_logprobs
         kwargs["max_tokens"] = 0 if self.allow_max_tokens_zero else 1
         
         try:
@@ -167,14 +192,9 @@ class TFLLMetric:
         
         msgs = self.render_messages(str(instr), str(x), str(y))
         
-        kwargs = dict(
-            model=self.model,
-            messages=msgs,
-            temperature=0,
-            echo=True,
-            logprobs=True,
-            top_logprobs=(self.top_logprobs if self.use_margin else 0)
-        )
+        kwargs = self._build_kwargs(msgs)
+        if self.use_margin:
+            kwargs["top_logprobs"] = self.top_logprobs
         kwargs["max_tokens"] = 0 if self.allow_max_tokens_zero else 1
         
         try:

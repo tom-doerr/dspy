@@ -148,8 +148,11 @@ When modifying adapters:
 
 ### Files Added/Modified
 - `dspy/metrics/tfll.py` - Complete TFLL metric implementation
+  - Auto-detects Together API and uses `/v1/completions` endpoint
+  - Handles both chat and completions response formats
 - `dspy/metrics/__init__.py` - Exports TFLLMetric
 - `dspy/clients/lm.py` - Added `raw_chat()` method
+  - Automatically routes to `text_completion` for Together prompts
 - `dspy/utils/metric_only.py` - NullLM and metric_only_mode context
 
 ### Usage Example
@@ -319,8 +322,12 @@ for episode in range(100):
 
 ### Testing Instructions
 
+**✅ Together API Support Fixed**
+TFLL now automatically uses Together's `/v1/completions` endpoint when Together model is detected,
+which properly supports `echo=True` and `logprobs=1` for prompt token logprobs.
+
 **Requirements:**
-- `TOGETHER_API_KEY` environment variable
+- API key for provider that supports echo mode
 - Python 3.11+
 
 **Quick Test:**

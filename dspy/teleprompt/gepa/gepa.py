@@ -507,8 +507,8 @@ class GEPA(Teleprompter):
             wandb_api_key=self.wandb_api_key,
             wandb_init_kwargs=self.wandb_init_kwargs,
             track_best_outputs=self.track_best_outputs,
-            display_progress_bar=True,
-            raise_on_exception=True,
+            # display_progress_bar=True,  # Commented out - not supported by current gepa package
+            # raise_on_exception=True,  # Commented out - not supported by current gepa package
 
             # Reproducibility
             seed=self.seed,

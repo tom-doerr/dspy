@@ -67,7 +67,8 @@ class ParallelExecutor:
         return safe_func
 
     def _execute_parallel(self, function, data):
-        results = [None] * len(data)
+        incomplete = object()
+        results = [incomplete] * len(data)
         job_cancelled = "cancelled"
 
         # We resubmit at most once per item.
@@ -141,7 +142,7 @@ class ParallelExecutor:
                 )
 
                 def all_done():
-                    return all(r is not None for r in results)
+                    return all(r is not incomplete for r in results)
 
                 while futures_set and not self.cancel_jobs.is_set():
                     if all_done():
@@ -154,17 +155,17 @@ class ParallelExecutor:
                         except Exception:
                             pass
                         else:
-                            if outcome != job_cancelled and results[index] is None:
+                            if outcome != job_cancelled and results[index] is incomplete:
                                 results[index] = outcome
 
                             # Update progress
                             if self.compare_results:
-                                vals = [r[-1] for r in results if r is not None]
+                                vals = [r[-1] for r in results if r is not incomplete]
                                 self._update_progress(pbar, sum(vals), len(vals))
                             else:
                                 self._update_progress(
                                     pbar,
-                                    len([r for r in results if r is not None]),
+                                    len([r for r in results if r is not incomplete]),
                                     len(data),
                                 )
 
