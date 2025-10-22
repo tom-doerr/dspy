@@ -41,6 +41,8 @@ class ParallelExecutor:
         self.error_count = 0
         self.error_lock = threading.Lock()
         self.cancel_jobs = threading.Event()
+        self.failed_indices = []
+        self.exceptions_map = {}
 
     def execute(self, function, data):
         tqdm.tqdm._instances.clear()
@@ -62,13 +64,12 @@ class ParallelExecutor:
                     logger.error(f"Error for {item}: {e}\n{traceback.format_exc()}")
                 else:
                     logger.error(f"Error for {item}: {e}. Set `provide_traceback=True` for traceback.")
-                return None
+                return e
 
         return safe_func
 
     def _execute_parallel(self, function, data):
-        incomplete = object()
-        results = [incomplete] * len(data)
+        results = [None] * len(data)
         job_cancelled = "cancelled"
 
         # We resubmit at most once per item.
@@ -142,7 +143,7 @@ class ParallelExecutor:
                 )
 
                 def all_done():
-                    return all(r is not incomplete for r in results)
+                    return all(r is not None for r in results)
 
                 while futures_set and not self.cancel_jobs.is_set():
                     if all_done():
@@ -155,17 +156,24 @@ class ParallelExecutor:
                         except Exception:
                             pass
                         else:
-                            if outcome != job_cancelled and results[index] is incomplete:
-                                results[index] = outcome
+                            if outcome != job_cancelled and results[index] is None:
+                                # Check if this is an exception
+                                if isinstance(outcome, Exception):
+                                    with self.error_lock:
+                                        self.failed_indices.append(index)
+                                        self.exceptions_map[index] = outcome
+                                    results[index] = None  # Keep None for failed examples
+                                else:
+                                    results[index] = outcome
 
                             # Update progress
                             if self.compare_results:
-                                vals = [r[-1] for r in results if r is not incomplete]
+                                vals = [r[-1] for r in results if r is not None]
                                 self._update_progress(pbar, sum(vals), len(vals))
                             else:
                                 self._update_progress(
                                     pbar,
-                                    len([r for r in results if r is not incomplete]),
+                                    len([r for r in results if r is not None]),
                                     len(data),
                                 )
 
