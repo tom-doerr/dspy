@@ -108,6 +108,7 @@ nav:
             - LM: api/models/LM.md
         - Modules:
             - BestOfN: api/modules/BestOfN.md
+            - StochasticBootstrapBestOfN: api/modules/StochasticBootstrapBestOfN.md
             - ChainOfThought: api/modules/ChainOfThought.md
             - CodeAct: api/modules/CodeAct.md
             - Module: api/modules/Module.md

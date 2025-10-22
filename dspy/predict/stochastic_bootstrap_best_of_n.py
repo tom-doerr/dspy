@@ -24,6 +24,61 @@ class DemoRecord:
 
 
 class StochasticBootstrapBestOfN(DSPyModule):
+    """
+    Stochastic bootstrapped variant of :class:`dspy.BestOfN`.
+
+    This module repeatedly samples a few-shot slate from a replay buffer, runs the wrapped module
+    with those demonstrations, and keeps the candidate with the highest reward (or the first to cross
+    ``threshold``). Demonstrations are pulled via Thompson sampling with a Beta posterior that is
+    initialised from the generation-time reward and updated every time a demo participates in the
+    winning set. Each candidate uses its *own* sampled demo slate, so the N attempts in one call can
+    differ in context.
+
+    Parameters
+    ----------
+    module_or_signature:
+        Either a compiled DSPy module or a signature (string / ``dspy.Signature`` subtype). Signatures are wrapped
+        in ``dspy.Predict`` automatically.
+    reward_fn:
+        Callable receiving the keyword arguments passed to ``forward`` and the resulting prediction; must return a
+        scalar reward (higher is better). Non-finite values are treated as ``-inf``.
+    N:
+        Number of candidate attempts per call.
+    threshold:
+        Optional early stopping threshold on the reward. When set, candidates stop once any attempt reaches at least
+        this value. If left ``None`` the module returns the best reward after all attempts.
+    fail_count:
+        Maximum number of exceptions allowed across the N attempts before re-raising the last error. Defaults to ``N``.
+    k:
+        Maximum number of demos to sample for each candidate. The effective draw is ``min(k, len(memory))``.
+    max_bootstrapped_demos:
+        Replay-buffer capacity per task key. When the buffer is full, the lowest-scoring demo (posterior mean) is evicted.
+    per_key_memory:
+        If ``True`` (default) maintain independent buffers per (module signature, input fields) key; otherwise share a global memory.
+    recency_weight:
+        Additive weight applied to the exponential recency bonus in Thompson sampling.
+    recency_tau:
+        Time constant (in steps) for the recency exponential decay.
+    initial_score_weight:
+        Scales how strongly the generation-time reward seeds the Beta posterior when a demo is added.
+    credit_mode:
+        Set-level credit assignment strategy. Currently ``\"best_only\"`` (default) or ``\"equal_split\"``.
+    min_reward_to_store:
+        Minimum normalised reward required before storing a demo in memory.
+    num_workers:
+        Thread pool size used to evaluate candidates. Defaults to ``dspy.settings.num_threads``.
+    seed:
+        Optional RNG seed controlling Thompson sampling and demo eviction.
+
+    Notes
+    -----
+    * Few-shots are attached via :class:`dspy.teleprompt.LabeledFewShot`, not by mutating ``demos`` on modules. This
+      keeps the public API surface small and ensures adapters format the demos correctly.
+    * Each call tracks errors and rewards, giving you per-call ``errors`` / ``success_scores`` metadata if you inspect
+      the internal state.
+    * Replay memories are keyed by ``module.signature`` (or class name) plus the sorted input field names unless
+      ``per_key_memory=False``.
+    """
     def __init__(
         self,
         module_or_signature: DSPyModule | str | type,
@@ -67,6 +122,7 @@ class StochasticBootstrapBestOfN(DSPyModule):
         self._score_max = float("-inf")
 
     def forward(self, **kwargs):
+        """Run up to ``N`` candidates with independent demo samples and return the highest-reward prediction."""
         self._step += 1
         key = self._memory_key(kwargs)
         mem = self._memory.setdefault(key, [])
@@ -176,6 +232,7 @@ class StochasticBootstrapBestOfN(DSPyModule):
         return best_pred
 
     def _module_with_demos(self, demos: list[dspy.Example]) -> DSPyModule:
+        """Clone the wrapped module and attach the provided demos via ``LabeledFewShot`` (or reset when empty)."""
         if demos:
             teleprompter = dspy.LabeledFewShot(k=len(demos))
             return teleprompter.compile(self.module, trainset=demos, sample=False)
