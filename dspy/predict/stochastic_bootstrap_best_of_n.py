@@ -312,11 +312,41 @@ class StochasticBootstrapBestOfN(DSPyModule):
             return None
 
     def _memory_key(self, kwargs: dict[str, Any]) -> str:
+        """Stable key using signature inputs; ignore transport-only fields.
+
+        - Prefer the wrapped module's signature input fields; otherwise, inspect
+          the first inner predictor via `named_predictors()`.
+        - Exclude transient keys (e.g., 'config', 'image_path', 'repo_url').
+        """
         if not self.per_key_memory:
             return "global"
+
         sig = getattr(self.module, "signature", None)
         name = getattr(sig, "__name__", self.module.__class__.__name__)
-        fields = sorted(k for k in kwargs if k != "config")
+
+        # Determine allowed fields from signature; fall back to inner predictors; then to kwargs
+        allowed: set[str] = set()
+        if getattr(self.module, "signature", None) is not None:
+            try:
+                allowed = set(self.module.signature.input_fields.keys())  # type: ignore[attr-defined]
+            except Exception:
+                allowed = set()
+        if not allowed:
+            named = getattr(self.module, "named_predictors", None)
+            if callable(named):
+                for _, predictor in named():
+                    if getattr(predictor, "signature", None) is not None:
+                        try:
+                            allowed = set(predictor.signature.input_fields.keys())  # type: ignore[attr-defined]
+                        except Exception:
+                            allowed = set()
+                        if allowed:
+                            break
+        if not allowed:
+            allowed = set(k for k in kwargs if k != "config")
+
+        volatile = {"config", "image_path", "repo_url"}
+        fields = sorted(k for k in kwargs if k in allowed and k not in volatile)
         return f"{name}:{','.join(fields)}"
 
     def _next_rollout(self) -> int:
