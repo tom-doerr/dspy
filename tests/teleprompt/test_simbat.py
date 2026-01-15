@@ -273,3 +273,20 @@ def test_simbat_single_thread():
     )
     compiled = optimizer.compile(student=student, trainset=trainset, seed=42)
     assert compiled is not None
+
+
+def test_simbat_multiple_batches():
+    """Test SIMBAT with multiple batches and high parallelism."""
+    trainset = [Example(input=f"Q{i}", output=f"A{i}").with_inputs("input")
+        for i in range(16)]
+    lm = DummyLM([f"A{i}" for i in range(16)])
+    dspy.settings.configure(lm=lm)
+    student = SimpleModule("input -> output")
+    optimizer = SIMBAT(
+        metric=simple_metric, bsize=4, num_candidates=4,
+        max_steps=3, max_demos=1, num_threads=8
+    )
+    compiled = optimizer.compile(student=student, trainset=trainset, seed=42)
+    assert compiled is not None
+    assert hasattr(compiled, 'trial_logs')
+    assert len(compiled.trial_logs) == 3  # 3 batches

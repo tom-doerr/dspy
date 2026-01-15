@@ -109,7 +109,7 @@ def append_a_rule(bucket, system, **kwargs):
     prompt_model = kwargs["prompt_model"] or dspy.settings.lm
 
     module_names = [name for name, _ in system.named_predictors()]
-    good, bad = bucket[0], bucket[-1]
+    good, bad = dict(bucket[0]), dict(bucket[-1])  # Copy to avoid mutation
     example = good["example"]
 
     if good["score"] <= batch_10p_score or bad["score"] >= batch_90p_score:

@@ -136,10 +136,11 @@ When modifying adapters:
 ### SIMBAT Optimizer
 - Location: `dspy/teleprompt/simbat.py`
 - SIMBA with Tail evaluation for better optimization
-- **Parallelized reflection phase**: Step 4 runs strategies concurrently via `ParallelExecutor`
-- ~7x speedup on reflection phase (LLM calls run in parallel)
+- **Parallelized reflection phase**: Step 4 runs strategies via `ParallelExecutor`
+- Respects `num_threads` parameter (e.g., `--threads 60`)
+- Fixed bucket mutation race condition in `simba_utils.py`
+- Tests: `pytest tests/teleprompt/test_simbat.py -v` (10 tests)
 - Usage: `--optimizer simbat --tail-eval-size 128`
-- Requires Python 3.11+
 
 ### TFLL Metric (Completed)
 - Location: `dspy/metrics/tfll.py`
