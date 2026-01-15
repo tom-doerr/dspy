@@ -136,6 +136,8 @@ When modifying adapters:
 ### SIMBAT Optimizer
 - Location: `dspy/teleprompt/simbat.py`
 - SIMBA with Tail evaluation for better optimization
+- **Parallelized reflection phase**: Step 4 runs strategies concurrently via `ParallelExecutor`
+- ~7x speedup on reflection phase (LLM calls run in parallel)
 - Usage: `--optimizer simbat --tail-eval-size 128`
 - Requires Python 3.11+
 

@@ -220,3 +220,56 @@ def test_tail_eval_simba_invalid_trainset():
             seed=42,
             tail_eval_n=1
         )
+
+
+def test_simbat_parallel_reflection():
+    """Test SIMBAT runs strategies in parallel with multiple threads."""
+    trainset = [
+        Example(input=f"Q{i}", output=f"A{i}").with_inputs("input")
+        for i in range(8)
+    ]
+    lm = DummyLM([f"A{i}" for i in range(8)])
+    dspy.settings.configure(lm=lm)
+
+    student = SimpleModule("input -> output")
+    optimizer = SIMBAT(
+        metric=simple_metric, bsize=4, num_candidates=3,
+        max_steps=1, max_demos=1, num_threads=4
+    )
+    compiled = optimizer.compile(student=student, trainset=trainset, seed=42)
+    assert compiled is not None
+    assert hasattr(compiled, 'candidate_programs')
+
+
+def test_simbat_parallel_with_demos():
+    """Test parallel reflection with append_a_demo strategy."""
+    trainset = [
+        Example(input=f"Q{i}", output=f"A{i}").with_inputs("input")
+        for i in range(8)
+    ]
+    lm = DummyLM([f"A{i}" for i in range(8)])
+    dspy.settings.configure(lm=lm)
+    student = SimpleModule("input -> output")
+    optimizer = SIMBAT(
+        metric=simple_metric, bsize=4, num_candidates=2,
+        max_steps=2, max_demos=2, num_threads=2
+    )
+    compiled = optimizer.compile(student=student, trainset=trainset, seed=42)
+    assert compiled is not None
+
+
+def test_simbat_single_thread():
+    """Test SIMBAT works with num_threads=1."""
+    trainset = [
+        Example(input=f"Q{i}", output=f"A{i}").with_inputs("input")
+        for i in range(6)
+    ]
+    lm = DummyLM([f"A{i}" for i in range(6)])
+    dspy.settings.configure(lm=lm)
+    student = SimpleModule("input -> output")
+    optimizer = SIMBAT(
+        metric=simple_metric, bsize=3, num_candidates=2,
+        max_steps=1, max_demos=0, num_threads=1
+    )
+    compiled = optimizer.compile(student=student, trainset=trainset, seed=42)
+    assert compiled is not None

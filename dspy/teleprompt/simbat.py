@@ -6,6 +6,7 @@ import numpy as np
 import dspy
 from dspy.teleprompt.simba import SIMBA
 from dspy.teleprompt.simba_utils import prepare_models_for_resampling, wrap_program
+from dspy.utils.parallelizer import ParallelExecutor
 
 logger = logging.getLogger("dspy.simbat")
 
@@ -140,8 +141,9 @@ class SIMBAT(SIMBA):
                 buckets.append((bucket, (max_score - min_score, max_score, max_score - avg_score)))
             buckets.sort(key=lambda x: x[1], reverse=True)
 
-            # STEP 4: build candidates by strategies
-            system_candidates = []
+            # STEP 4: build candidates by strategies (parallelized)
+            # Phase 1: Prepare all candidates upfront
+            candidates_to_process = []
             for bucket_idx, (bucket, _) in enumerate(buckets):
                 src_prog_idx = softmax_sample(rng, top_k_plus_baseline(self.num_candidates), self.temperature_for_candidates)
                 system_candidate = programs[src_prog_idx].deepcopy()
@@ -159,25 +161,30 @@ class SIMBAT(SIMBA):
                 for _, predictor in name2pred.items():
                     predictor.demos = [demo for j, demo in enumerate(predictor.demos) if j not in drop_idx]
 
-                # apply strategy
                 strategy = rng.choice(self.strategies)
                 logger.info(f"Batch {batch_idx+1}: Invoking strategy: {strategy.__name__}")
+                candidates_to_process.append({
+                    "bucket": bucket, "system_candidate": system_candidate,
+                    "strategy": strategy, "predictor2name": predictor2name,
+                    "name2predictor": name2pred, "prompt_model": None,
+                    "batch_10p_score": batch_10p, "batch_90p_score": batch_90p,
+                })
+
+                if len(candidates_to_process) >= self.num_candidates + 1:
+                    break
+
+            def apply_strategy(item):
                 try:
-                    strategy(
-                        bucket,
-                        system_candidate,
-                        predictor2name=predictor2name,
-                        name2predictor=name2pred,
-                        batch_10p_score=batch_10p,
-                        batch_90p_score=batch_90p,
-                    )
+                    item["strategy"](item["bucket"], item["system_candidate"],
+                        **{k: item[k] for k in ["predictor2name", "name2predictor",
+                           "prompt_model", "batch_10p_score", "batch_90p_score"]})
+                    return item["system_candidate"]
                 except Exception as e:
                     logger.error(f"Strategy failed: {e}")
-                    continue
 
-                system_candidates.append(system_candidate)
-                if len(system_candidates) >= self.num_candidates + 1:
-                    break
+            strat_exec = ParallelExecutor(num_threads=self.num_threads, disable_progress_bar=True)
+            results = strat_exec.execute(apply_strategy, candidates_to_process)
+            system_candidates = [r for r in results if r is not None]
 
             # STEP 5–6: evaluate candidates on minibatch and average
             logger.info(f"Batch {batch_idx+1}: Evaluating {len(system_candidates)} programs on {self.bsize} examples.")
