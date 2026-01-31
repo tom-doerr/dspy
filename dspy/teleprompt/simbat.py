@@ -222,15 +222,22 @@ class SIMBAT(SIMBA):
         # Build tail indices after last consumed minibatch window
         n = min(tail_eval_n, len(trainset))
         seen = set(seen_indices) if dedup_seen else set()
-        eval_indices, ptr = [], instance_idx
-        while len(eval_indices) < n and len(seen) < len(trainset):
-            if ptr >= len(data_indices):
-                ptr = 0
-            idx = data_indices[ptr]
-            ptr += 1
-            if idx not in seen:
-                eval_indices.append(idx)
-                seen.add(idx)
+
+        # Handle small trainsets that cycled completely during training
+        all_seen = dedup_seen and len(seen) >= len(trainset)
+        if all_seen:
+            logger.warning(f"All {len(trainset)} examples seen. Using random sample for tail eval.")
+            eval_indices = rng.sample(range(len(trainset)), n)
+        else:
+            eval_indices, ptr = [], instance_idx
+            while len(eval_indices) < n and len(seen) < len(trainset):
+                if ptr >= len(data_indices):
+                    ptr = 0
+                idx = data_indices[ptr]
+                ptr += 1
+                if idx not in seen:
+                    eval_indices.append(idx)
+                    seen.add(idx)
         evalset = [trainset[i] for i in eval_indices]
 
         logger.info(f"VALIDATION: Evaluating {len(candidate_programs)} programs on a {len(evalset)}-example tail set.")
