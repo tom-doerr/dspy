@@ -561,6 +561,21 @@ def test_responses_api():
         assert dspy_responses.call_args.kwargs["model"] == "openai/gpt-5-mini"
 
 
+def test_completion_reasoning_content():
+    """Chat completion extracts reasoning_content."""
+    lm = dspy.LM(model="dspy-test-model", cache=False)
+    with mock.patch("litellm.completion") as mc:
+        mc.return_value = ModelResponse(
+            choices=[Choices(message=Message(
+                content="42", reasoning_content="thinking..."
+            ))],
+            model="dspy-test-model",
+        )
+        result = lm("predict value")
+        assert result[0]["text"] == "42"
+        assert result[0]["reasoning_content"] == "thinking..."
+
+
 def test_lm_replaces_system_with_developer_role():
     with mock.patch(
         "dspy.clients.lm.litellm_responses_completion", return_value={"choices": []}

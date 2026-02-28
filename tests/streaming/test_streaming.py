@@ -1169,3 +1169,19 @@ def test_stream_listener_could_form_end_identifier_xml_adapter():
     # Should return False for text that cannot form the pattern
     assert listener._could_form_end_identifier("hello world", "XMLAdapter") is False
     assert listener._could_form_end_identifier("some text", "XMLAdapter") is False
+
+
+def _mk_rc_chunk(rc):
+    delta = Delta(content=None, reasoning_content=rc)
+    return ModelResponseStream(choices=[StreamingChoices(delta=delta, index=0, finish_reason=None)])
+
+
+def test_stream_listener_reasoning_mode():
+    from dspy.streaming.messages import StreamResponse
+    L = dspy.streaming.StreamListener(signature_field_name="reasoning", stream_reasoning=True)
+    r1 = L.receive(_mk_rc_chunk("Let me "))
+    r2 = L.receive(_mk_rc_chunk("think..."))
+    assert isinstance(r1, StreamResponse) and r1.chunk == "Let me "
+    assert r2.chunk == "think..." and not r2.is_last_chunk
+    r3 = L.receive(_mk_rc_chunk(None))  # end signal
+    assert r3.is_last_chunk is True

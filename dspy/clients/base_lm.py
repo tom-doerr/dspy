@@ -184,6 +184,10 @@ class BaseLM:
             if hasattr(c, "message") and getattr(c.message, "tool_calls", None):
                 output["tool_calls"] = c.message.tool_calls
 
+            # Extract reasoning_content (vLLM --reasoning-parser, DeepSeek, etc.)
+            if hasattr(c, "message") and getattr(c.message, "reasoning_content", None):
+                output["reasoning_content"] = c.message.reasoning_content
+
             # Extract citations from LiteLLM response if available
             citations = self._extract_citations_from_response(c)
             if citations:

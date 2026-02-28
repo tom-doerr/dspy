@@ -27,6 +27,7 @@ class StreamListener:
         predict: Any = None,
         predict_name: str | None = None,
         allow_reuse: bool = False,
+        stream_reasoning: bool = False,
     ):
         """
         Args:
@@ -37,10 +38,13 @@ class StreamListener:
                 automatically look for the predictor that has the `signature_field_name` in its signature.
             allow_reuse: If True, the stream listener can be reused for multiple streams. Please note that this could
                 hurt the performance because the same stream chunk is sent to multiple listeners.
+            stream_reasoning: If True, capture native reasoning_content tokens instead of matching
+                field delimiters in content. For use with vLLM --reasoning-parser, DeepSeek, etc.
         """
         self.signature_field_name = signature_field_name
         self.predict = predict
         self.predict_name = predict_name
+        self.stream_reasoning = stream_reasoning
 
         self.field_start_queue = []
         self.field_end_queue = Queue()
@@ -108,7 +112,29 @@ class StreamListener:
 
         return False
 
+    def _receive_reasoning(self, chunk):
+        if self.stream_end:
+            if self.allow_reuse:
+                self.stream_end = self.stream_start = False
+            else:
+                return
+        try:
+            rc = getattr(chunk.choices[0].delta, "reasoning_content", None)
+        except (AttributeError, IndexError):
+            return
+        if rc is None:
+            if self.stream_start:
+                self.stream_end = True
+                return StreamResponse(self.predict_name, self.signature_field_name, "", True)
+            return
+        self.stream_start = True
+        return StreamResponse(self.predict_name, self.signature_field_name, rc, False)
+
     def receive(self, chunk: ModelResponseStream):
+        # Fast path for native reasoning_content streaming
+        if self.stream_reasoning:
+            return self._receive_reasoning(chunk)
+
         adapter_name = settings.adapter.__class__.__name__ if settings.adapter else "ChatAdapter"
         if adapter_name not in self.adapter_identifiers:
             raise ValueError(
@@ -299,7 +325,7 @@ def find_predictor_for_stream_listeners(program: "Module", stream_listeners: lis
 
     field_name_to_named_predictor = {}
     for listener in stream_listeners:
-        if listener.predict:
+        if listener.predict or listener.stream_reasoning:
             continue
         field_name_to_named_predictor[listener.signature_field_name] = None
 
@@ -324,6 +350,12 @@ def find_predictor_for_stream_listeners(program: "Module", stream_listeners: lis
 
     predict_id_to_listener = defaultdict(list)
     for listener in stream_listeners:
+        if listener.stream_reasoning:
+            # Reasoning listeners attach to all predictors
+            for name, predictor in predictors:
+                listener.predict_name = listener.predict_name or name
+                predict_id_to_listener[id(predictor)].append(listener)
+            continue
         if listener.predict:
             predict_id_to_listener[id(listener.predict)].append(listener)
             continue
