@@ -6,6 +6,7 @@ import pytest
 from litellm.utils import ChatCompletionMessageToolCall, Choices, Function, Message, ModelResponse
 
 import dspy
+from dspy.experimental import Citations
 
 
 @pytest.mark.parametrize(
@@ -398,6 +399,38 @@ def test_chat_adapter_with_code():
         assert result[0]["code"].code == 'print("Hello, world!")'
 
 
+def test_code_output_field_omits_json_schema_in_prompt():
+    """Regression test for #9251: dspy.Code should avoid duplicating large JSON schema text."""
+    class CodeGeneration(dspy.Signature):
+        """Generate code to answer the question"""
+        question: str = dspy.InputField()
+        code: dspy.Code = dspy.OutputField()
+
+    adapter = dspy.ChatAdapter()
+    messages = adapter.format(CodeGeneration, [], {"question": "Hello"})
+    system_content = messages[0]["content"]
+
+    assert dspy.Code.description() in system_content
+    assert "JSON schema" not in system_content
+    assert '"properties"' not in system_content
+    assert "Code type in DSPy" not in system_content
+
+
+def test_citations_output_field_keeps_json_schema_in_prompt():
+    """Non-Code custom types should keep schema guidance for structured output reliability."""
+
+    class CitationGeneration(dspy.Signature):
+        question: str = dspy.InputField()
+        citations: Citations = dspy.OutputField()
+
+    adapter = dspy.ChatAdapter()
+    messages = adapter.format(CitationGeneration, [], {"question": "Hello"})
+    system_content = messages[0]["content"]
+
+    assert "must adhere to the JSON schema" in system_content
+    assert "Type description of Citations" in system_content
+
+
 def test_chat_adapter_formats_conversation_history():
     class MySignature(dspy.Signature):
         question: str = dspy.InputField()
@@ -441,6 +474,24 @@ def test_chat_adapter_fallback_to_json_adapter_on_exception():
         # The parse should succeed
         result = adapter(lm, {}, signature, [], {"question": "What is the capital of France?"})
         assert result == [{"answer": "Paris"}]
+
+
+def test_chat_adapter_respects_use_json_adapter_fallback_flag():
+    signature = dspy.make_signature("question->answer")
+    adapter = dspy.ChatAdapter(use_json_adapter_fallback=False)
+
+    with mock.patch("litellm.completion") as mock_completion:
+        mock_completion.return_value = ModelResponse(
+            choices=[Choices(message=Message(content="nonsense"))],
+            model="openai/gpt-4o-mini",
+        )
+
+        lm = dspy.LM("openai/gpt-4o-mini", cache=False)
+
+        with mock.patch("dspy.adapters.json_adapter.JSONAdapter.__call__") as mock_json_adapter_call:
+            with pytest.raises(dspy.utils.exceptions.AdapterParseError):
+                adapter(lm, {}, signature, [], {"question": "What is the capital of France?"})
+        mock_json_adapter_call.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -591,3 +642,154 @@ def test_chat_adapter_toolcalls_vague_match():
         assert result[0]["tool_calls"] == dspy.ToolCalls(
             tool_calls=[dspy.ToolCalls.ToolCall(name="get_weather", args={"city": "Paris"})]
         )
+
+
+def test_chat_adapter_native_reasoning():
+    class MySignature(dspy.Signature):
+        question: str = dspy.InputField()
+        reasoning: dspy.Reasoning = dspy.OutputField()
+        answer: str = dspy.OutputField()
+
+    adapter = dspy.ChatAdapter()
+
+    with mock.patch("litellm.completion") as mock_completion:
+        mock_completion.return_value = ModelResponse(
+            choices=[
+                Choices(
+                    message=Message(
+                        content="[[ ## answer ## ]]\nParis\n[[ ## completion ## ]]",
+                        reasoning_content="Step-by-step thinking about the capital of France",
+                    ),
+                )
+            ],
+            model="anthropic/claude-3-7-sonnet-20250219",
+        )
+        modified_signature = adapter._call_preprocess(
+            dspy.LM(model="anthropic/claude-3-7-sonnet-20250219", reasoning_effort="low", cache=False),
+            {},
+            MySignature,
+            {"question": "What is the capital of France?"},
+        )
+        assert "reasoning" not in modified_signature.output_fields
+
+        result = adapter(
+            dspy.LM(model="anthropic/claude-3-7-sonnet-20250219", reasoning_effort="low", cache=False),
+            {},
+            MySignature,
+            [],
+            {"question": "What is the capital of France?"},
+        )
+        assert result[0]["reasoning"] == dspy.Reasoning(content="Step-by-step thinking about the capital of France")
+
+
+def test_chat_adapter_parses_float_with_underscores():
+    """
+    This test verifies that ChatAdapter can parse float numbers with underscores.
+    After json-repair version 0.54.1, floats like "123_456.789" are treated as normal float numbers.
+    """
+
+    class Score(pydantic.BaseModel):
+        score: float
+
+    class MySignature(dspy.Signature):
+        question: str = dspy.InputField()
+        score: Score = dspy.OutputField()
+
+    adapter = dspy.ChatAdapter()
+
+    # Simulate a response with a float number containing underscores
+    with mock.patch("litellm.completion") as mock_completion:
+        mock_completion.return_value = ModelResponse(
+            choices=[
+                Choices(message=Message(content="[[ ## score ## ]]\n{'score': 123_456.789}\n[[ ## completed ## ]]"))
+            ],
+            model="openai/gpt-4o-mini",
+        )
+
+        lm = dspy.LM("openai/gpt-4o-mini", cache=False)
+        result = adapter(lm, {}, MySignature, [], {"question": "What is the score?"})
+
+        # The underscore-separated float should be parsed as a normal float
+        assert result[0]["score"].score == 123456.789
+
+
+def test_format_system_message():
+    class MySignature(dspy.Signature):
+        """Answer the question with multiple answers and scores"""
+
+        question: str = dspy.InputField()
+        answers: list[str] = dspy.OutputField()
+        scores: list[float] = dspy.OutputField()
+
+    adapter = dspy.ChatAdapter()
+    system_message = adapter.format_system_message(MySignature)
+    expected_system_message = """Your input fields are:
+1. `question` (str):
+Your output fields are:
+1. `answers` (list[str]): 
+2. `scores` (list[float]):
+All interactions will be structured in the following way, with the appropriate values filled in.
+
+[[ ## question ## ]]
+{question}
+
+[[ ## answers ## ]]
+{answers}        # note: the value you produce must adhere to the JSON schema: {"type": "array", "items": {"type": "string"}}
+
+[[ ## scores ## ]]
+{scores}        # note: the value you produce must adhere to the JSON schema: {"type": "array", "items": {"type": "number"}}
+
+[[ ## completed ## ]]
+In adhering to this structure, your objective is: 
+        Answer the question with multiple answers and scores"""
+    assert system_message == expected_system_message
+
+
+def test_null_content_raises_adapter_parse_error():
+    """When the LM returns content=None with no tool calls (e.g. content filter),
+    the adapter should raise AdapterParseError instead of silently returning None fields."""
+    from dspy.utils.exceptions import AdapterParseError
+
+    lm = dspy.LM("openai/gpt-4o-mini", cache=False)
+    response = ModelResponse(
+        choices=[Choices(message=Message(content=None))],
+        model="openai/gpt-4o-mini",
+    )
+
+    with dspy.context(lm=lm):
+        with mock.patch("litellm.completion", return_value=response):
+            cot = dspy.ChainOfThought("question -> answer")
+            with pytest.raises(AdapterParseError):
+                cot(question="test")
+
+
+def test_empty_string_content_raises_adapter_parse_error():
+    """Same as above but with empty string content."""
+    from dspy.utils.exceptions import AdapterParseError
+
+    lm = dspy.LM("openai/gpt-4o-mini", cache=False)
+    response = ModelResponse(
+        choices=[Choices(message=Message(content=""))],
+        model="openai/gpt-4o-mini",
+    )
+
+    with dspy.context(lm=lm):
+        with mock.patch("litellm.completion", return_value=response):
+            cot = dspy.ChainOfThought("question -> answer")
+            with pytest.raises(AdapterParseError):
+                cot(question="test")
+
+
+def test_tool_call_with_null_content_does_not_raise():
+    """Tool-call-only responses legitimately have content=None.
+    _call_postprocess must NOT raise when tool_calls are present."""
+    adapter = dspy.ChatAdapter(use_native_function_calling=True)
+    sig_cls = dspy.Signature("question, tools: list[dspy.Tool] -> answer, tool_calls: dspy.ToolCalls")
+
+    outputs = [{"text": None, "tool_calls": [
+        {"function": {"name": "search", "arguments": '{"query": "test"}'}, "id": "call_1", "type": "function"}
+    ]}]
+
+    result = adapter._call_postprocess(sig_cls, sig_cls, outputs, None, {})
+    assert result is not None
+    assert len(result) == 1

@@ -1,3 +1,6 @@
+import os
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+
 from dspy.predict import *
 from dspy.primitives import *
 from dspy.retrievers import *
@@ -6,7 +9,7 @@ from dspy.teleprompt import *
 
 from dspy.evaluate import Evaluate  # isort: skip
 from dspy.clients import *  # isort: skip
-from dspy.adapters import Adapter, ChatAdapter, JSONAdapter, XMLAdapter, TwoStepAdapter, Image, Audio, History, Type, Tool, ToolCalls, Code  # isort: skip
+from dspy.adapters import Adapter, ChatAdapter, JSONAdapter, XMLAdapter, TwoStepAdapter, Image, Audio, File, History, Type, Tool, ToolCalls, Code, Reasoning  # isort: skip
 from dspy.utils.logging_utils import configure_dspy_loggers, disable_logging, enable_logging
 from dspy.utils.asyncify import asyncify
 from dspy.utils.syncify import syncify
@@ -23,6 +26,7 @@ configure_dspy_loggers(__name__)
 
 # Singleton definitions and aliasing
 configure = settings.configure
+load_settings = settings.load
 context = settings.context
 
 BootstrapRS = BootstrapFewShotWithRandomSearch

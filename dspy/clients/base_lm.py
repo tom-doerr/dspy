@@ -1,5 +1,6 @@
 import datetime
 import uuid
+from typing import Any, TextIO
 
 from dspy.dsp.utils import settings
 from dspy.utils.callback import with_callbacks
@@ -17,7 +18,7 @@ class BaseLM:
     `forward` method and make sure the return format is identical to the
     [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object).
 
-    Example:
+    Examples:
 
     ```python
     from openai import OpenAI
@@ -81,31 +82,55 @@ class BaseLM:
         return outputs
 
     @with_callbacks
-    def __call__(self, prompt=None, messages=None, **kwargs):
+    def __call__(
+        self,
+        prompt: str | None = None,
+        messages: list[dict[str, Any]] | None = None,
+        **kwargs
+    ) -> list[dict[str, Any] | str]:
         response = self.forward(prompt=prompt, messages=messages, **kwargs)
         outputs = self._process_lm_response(response, prompt, messages, **kwargs)
 
         return outputs
 
     @with_callbacks
-    async def acall(self, prompt=None, messages=None, **kwargs):
+    async def acall(
+        self,
+        prompt: str | None = None,
+        messages: list[dict[str, Any]] | None = None,
+        **kwargs
+    ) -> list[dict[str, Any] | str]:
         response = await self.aforward(prompt=prompt, messages=messages, **kwargs)
         outputs = self._process_lm_response(response, prompt, messages, **kwargs)
         return outputs
 
-    def forward(self, prompt=None, messages=None, **kwargs):
+    def forward(
+        self,
+        prompt: str | None = None,
+        messages: list[dict[str, Any]] | None = None,
+        **kwargs
+    ):
         """Forward pass for the language model.
 
-        Subclasses must implement this method, and the response should be identical to
-        [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object).
+        Subclasses must implement this method, and the response should be identical to either of the following formats:
+        - [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object)
+        - [OpenAI chat completion format](https://platform.openai.com/docs/api-reference/chat/object)
+        - [OpenAI text completion format](https://platform.openai.com/docs/api-reference/completions/object)
         """
         raise NotImplementedError("Subclasses must implement this method.")
 
-    async def aforward(self, prompt=None, messages=None, **kwargs):
+    async def aforward(
+        self,
+        prompt: str | None = None,
+        messages: list[dict[str, Any]] | None = None,
+        **kwargs
+    ):
         """Async forward pass for the language model.
 
-        Subclasses that support async should implement this method, and the response should be identical to
-        [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object).
+        Subclasses must implement this method, and the response should be identical to either of the following formats:
+        - [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object)
+        - [OpenAI chat completion format](https://platform.openai.com/docs/api-reference/chat/object)
+        - [OpenAI text completion format](https://platform.openai.com/docs/api-reference/completions/object)
         """
         raise NotImplementedError("Subclasses must implement this method.")
 
@@ -135,8 +160,8 @@ class BaseLM:
 
         return new_instance
 
-    def inspect_history(self, n: int = 1):
-        return pretty_print_history(self.history, n)
+    def inspect_history(self, n: int = 1, file: "TextIO | None" = None) -> None:
+        pretty_print_history(self.history, n, file=file)
 
     def update_history(self, entry):
         if settings.disable_history:
@@ -179,6 +204,10 @@ class BaseLM:
         for c in response.choices:
             output = {}
             output["text"] = c.message.content if hasattr(c, "message") else c["text"]
+
+            if hasattr(c, "message") and hasattr(c.message, "reasoning_content") and c.message.reasoning_content:
+                output["reasoning_content"] = c.message.reasoning_content
+
             if merged_kwargs.get("logprobs"):
                 output["logprobs"] = c.logprobs if hasattr(c, "logprobs") else c["logprobs"]
             if hasattr(c, "message") and getattr(c.message, "tool_calls", None):
@@ -198,7 +227,6 @@ class BaseLM:
         if all(len(output) == 1 for output in outputs):
             # Return a list if every output only has "text" key
             outputs = [output["text"] for output in outputs]
-
         return outputs
 
     def _extract_citations_from_response(self, choice):
@@ -259,6 +287,13 @@ class BaseLM:
         return [result]
 
 
-def inspect_history(n: int = 1):
-    """The global history shared across all LMs."""
-    return pretty_print_history(GLOBAL_HISTORY, n)
+def inspect_history(n: int = 1, file: "TextIO | None" = None) -> None:
+    """The global history shared across all LMs.
+
+    Args:
+        n: Number of recent entries to display. Defaults to 1.
+        file: An optional file-like object to write output to. When
+            provided, ANSI color codes are automatically disabled.
+            Defaults to `None` (prints to stdout).
+    """
+    pretty_print_history(GLOBAL_HISTORY, n, file=file)

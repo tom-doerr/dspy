@@ -84,12 +84,13 @@ import asyncio
 async def read_output_stream():
   output_stream = stream_predict(question="Why did a chicken cross the kitchen?")
 
+  return_value = None
   async for chunk in output_stream:
-    return_value = None
     if isinstance(chunk, dspy.streaming.StreamResponse):
       print(f"Output token of field {chunk.signature_field_name}: {chunk.chunk}")
     elif isinstance(chunk, dspy.Prediction):
       return_value = chunk
+  return return_value
 
 
 program_output = asyncio.run(read_output_stream())
@@ -130,7 +131,7 @@ import asyncio
 import dspy
 
 lm = dspy.LM("openai/gpt-4o-mini", cache=False)
-dspy.settings.configure(lm=lm)
+dspy.configure(lm=lm)
 
 
 class MyModule(dspy.Module):
@@ -204,7 +205,7 @@ import asyncio
 import dspy
 
 lm = dspy.LM("openai/gpt-4o-mini", cache=False)
-dspy.settings.configure(lm=lm)
+dspy.configure(lm=lm)
 
 
 def fetch_user_info(user_name: str):
@@ -259,7 +260,7 @@ import asyncio
 import dspy
 
 lm = dspy.LM("openai/gpt-4o-mini", cache=False)
-dspy.settings.configure(lm=lm)
+dspy.configure(lm=lm)
 
 
 class MyModule(dspy.Module):
@@ -371,7 +372,7 @@ import asyncio
 import dspy
 
 lm = dspy.LM("openai/gpt-4o-mini", cache=False)
-dspy.settings.configure(lm=lm)
+dspy.configure(lm=lm)
 
 
 class MyModule(dspy.Module):

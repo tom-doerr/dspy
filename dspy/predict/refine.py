@@ -63,11 +63,11 @@ class Refine(Module):
             threshold (float): The threshold for the reward function.
             fail_count (Optional[int], optional): The number of times the module can fail before raising an error
 
-        Example:
+        Examples:
             ```python
             import dspy
 
-            dspy.settings.configure(lm=dspy.LM("openai/gpt-4o-mini"))
+            dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))
 
             # Define a QA module with chain of thought
             qa = dspy.ChainOfThought("question -> answer")

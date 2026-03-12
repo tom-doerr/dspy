@@ -58,7 +58,7 @@ These optimizers produce optimal instructions for the prompt and, in the case of
 
 6. [**`MIPROv2`**](../../api/optimizers/MIPROv2.md): Generates instructions *and* few-shot examples in each step. The instruction generation is data-aware and demonstration-aware. Uses Bayesian Optimization to effectively search over the space of generation instructions/demonstrations across your modules.
 
-7. [**`SIMBA`**](../../api/optimizers/SIMBA.md)
+7. [**`SIMBA`**](../../api/optimizers/SIMBA.md): Uses stochastic mini-batch sampling to identify challenging examples with high output variability, then applies the LLM to introspectively analyze failures and generate self-reflective improvement rules or add successful demonstrations.
 
 8. [**`GEPA`**](../../api/optimizers/GEPA/overview.md): Uses LM's to reflect on the DSPy program's trajectory, to identify what worked, what didn't and propose prompts addressing the gaps. Additionally, GEPA can leverage domain-specific textual feedback to rapidly improve the DSPy program. Detailed tutorials on using GEPA are available at [dspy.GEPA Tutorials](../../tutorials/gepa_ai_program/index.md).
 
@@ -72,6 +72,10 @@ This optimizer is used to fine-tune the underlying LLM(s).
 ### Program Transformations
 
 10. [**`Ensemble`**](../../api/optimizers/Ensemble.md): Ensembles a set of DSPy programs and either uses the full set or randomly samples a subset into a single program.
+
+### Meta-Optimizers
+
+11. [**`BetterTogether`**](../../api/optimizers/BetterTogether.md): A meta-optimizer that combines prompt optimization and weight optimization (fine-tuning) in configurable sequences. Prompt optimization can discover effective task decompositions and reasoning strategies, while weight optimization can specialize the model to execute these patterns more efficiently. Using these approaches together in sequences (e.g., prompt → weight → prompt) may allow each to build on the improvements made by the other. Empirically, this approach often outperforms either strategy alone. Detailed tutorial available at [BetterTogether AIME Tutorial](../../tutorials/bettertogether_aime/index.ipynb).
 
 
 ## Which optimizer should I use?

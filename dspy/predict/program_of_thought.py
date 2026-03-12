@@ -3,6 +3,7 @@ import logging
 import re
 
 import dspy
+from dspy.primitives.code_interpreter import FinalOutput
 from dspy.primitives.module import Module
 from dspy.primitives.python_interpreter import PythonInterpreter
 from dspy.signatures.signature import Signature, ensure_signature
@@ -15,7 +16,7 @@ class ProgramOfThought(Module):
     A DSPy module that runs Python programs to solve a problem.
     This module requires deno to be installed. Please install deno following https://docs.deno.com/runtime/getting_started/installation/
 
-    Example:
+    Examples:
     ```
     import dspy
 
@@ -52,7 +53,7 @@ class ProgramOfThought(Module):
                 self._generate_instruction("regenerate"),
             ),
         )
-        self.generate_answer = dspy.ChainOfThought(
+        self.generate_output = dspy.ChainOfThought(
             dspy.Signature(
                 self._generate_signature("answer").fields,
                 self._generate_instruction("answer"),
@@ -66,35 +67,25 @@ class ProgramOfThought(Module):
         fields_for_mode = {
             "generate": {
                 "generated_code": dspy.OutputField(
-                    prefix="Code:",
                     desc="python code that answers the question",
-                    format=str,
                 ),
             },
             "regenerate": {
                 "previous_code": dspy.InputField(
-                    prefix="Previous Code:",
                     desc="previously-generated python code that errored",
-                    format=str,
                 ),
                 "error": dspy.InputField(
-                    prefix="Error:",
                     desc="error message from previously-generated python code",
                 ),
                 "generated_code": dspy.OutputField(
-                    prefix="Code:",
                     desc="python code that answers the question",
-                    format=str,
                 ),
             },
             "answer": {
                 "final_generated_code": dspy.InputField(
-                    prefix="Code:",
                     desc="python code that answers the question",
-                    format=str,
                 ),
                 "code_output": dspy.InputField(
-                    prefix="Code Output:",
                     desc="output of previously-generated python code",
                 ),
             }
@@ -117,8 +108,8 @@ class ProgramOfThought(Module):
             instr = [
                 f"You will be given {mode_inputs} and you will respond with {mode_outputs}.",
                 f"Generating executable Python code that programmatically computes the correct {mode_outputs}.",
-                "After you're done with the computation and think you have the answer, make sure to provide your answer by calling the preloaded function `final_answer()`.",
-                f'You should structure your answer in a dict object, like {{"field_a": answer_a, ...}}, evaluates to the correct value mapping for {final_outputs}.',
+                "After you're done with the computation and think you have the final output, make sure to submit your output by calling the preloaded function `SUBMIT()`.",
+                f'You must structure your output in a dict, like {{"field_a": value_a, ...}}, with the correct value mapping for the field(s): {final_outputs}.',
             ]
         elif mode == "regenerate":
             instr = [
@@ -135,7 +126,7 @@ class ProgramOfThought(Module):
     def _parse_code(self, code_data):
         code = code_data.get("generated_code", "").split("---", 1)[0].split("\n\n\n", 1)[0]
         code_match = re.search(r"```python[ \n](.*?)[ \n]```?", code, re.DOTALL)
-        code_block = (code_match.group(1) if code_match else code).replace("\\n", "\n")
+        code_block = code_match.group(1) if code_match else code
         if not code_block:
             return code, "Error: Empty code after parsing."
         if "\n" not in code_block and code_block.count("=") > 1:
@@ -144,17 +135,6 @@ class ProgramOfThought(Module):
         last_line_match = re.match(r"^(\w+)\s*=", lines[-1].strip())
         if last_line_match and len(lines) > 1:
             code_block += "\n" + last_line_match.group(1)
-        else:
-            code_block = re.sub(
-                r"([a-zA-Z_]\w* *=.*?)(?=[a-zA-Z_]\w* *=)",
-                r"\1\n",
-                code_block,
-            )
-            code_block = re.sub(
-                r"([a-zA-Z_]\w* *=.*?)([a-zA-Z_]\w*)$",
-                r"\1\n\2",
-                code_block,
-            )
         return code_block, None
 
     def _execute_code(self, code):
@@ -165,8 +145,11 @@ class ProgramOfThought(Module):
             return None, "Error: Empty code before execution."
 
         try:
+            result = self.interpreter.execute(code)
+            if isinstance(result, FinalOutput):
+                result = result.output
             # Since it's more complex structure now, just blindly use json to represents all.
-            output = json.dumps(self.interpreter.execute(code))
+            output = json.dumps(result)
             return output, None
         except Exception as e:
             return None, str(e)
@@ -192,6 +175,6 @@ class ProgramOfThought(Module):
                 output, error = self._execute_code(code)
             hop += 1
         input_kwargs.update({"final_generated_code": code, "code_output": output})
-        answer_gen_result = self.generate_answer(**input_kwargs)
+        output_gen_result = self.generate_output(**input_kwargs)
         self.interpreter.shutdown()
-        return answer_gen_result
+        return output_gen_result

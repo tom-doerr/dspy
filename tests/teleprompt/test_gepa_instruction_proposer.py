@@ -1,5 +1,8 @@
+import logging
 from dataclasses import dataclass
 from typing import Any
+
+import pytest
 
 import dspy
 from dspy.teleprompt.gepa import instruction_proposal
@@ -107,7 +110,7 @@ def test_reflection_lm_gets_structured_images():
             {"label": "vertebrate"},
         ]
     )
-    dspy.settings.configure(lm=lm)
+    dspy.configure(lm=lm)
 
     gepa = dspy.GEPA(
         metric=lambda gold, pred, trace=None, pred_name=None, pred_trace=None: 0.3,
@@ -172,7 +175,7 @@ def test_custom_proposer_without_reflection_lm():
             {"label": "mode"},
         ]
     )
-    dspy.settings.configure(lm=lm)
+    dspy.configure(lm=lm)
 
     # Test the full flexibility: no reflection_lm provided to GEPA at all!
     # The updated GEPA core library now allows this when using custom proposers
@@ -266,7 +269,7 @@ def test_image_serialization_into_strings():
             {"label": "herbivore"},
         ]
     )
-    dspy.settings.configure(lm=lm)
+    dspy.configure(lm=lm)
 
     reflection_lm = DummyLM(
         [
@@ -297,7 +300,8 @@ def test_image_serialization_into_strings():
     )
 
 
-def test_default_proposer():
+@pytest.mark.parametrize("reasoning", [True, False])
+def test_default_proposer(reasoning: bool, caplog):
     student = dspy.Predict("image -> label")
 
     image = dspy.Image("https://picsum.photos/id/237/200/300")
@@ -323,7 +327,7 @@ def test_default_proposer():
             {"label": "herbivore"},
         ]
     )
-    dspy.settings.configure(lm=lm)
+    dspy.configure(lm=lm)
 
     reflection_lm = DummyLM(
         [
@@ -332,7 +336,8 @@ def test_default_proposer():
             {"improved_instruction": "Consider contextual clues in the image"},
             {"improved_instruction": "Analyze shape, color, and texture patterns"},
             {"improved_instruction": "Look for distinguishing characteristics"},
-        ]
+        ],
+        reasoning=reasoning,
     )
 
     gepa = dspy.GEPA(
@@ -341,7 +346,19 @@ def test_default_proposer():
         reflection_lm=reflection_lm,
     )
 
-    gepa.compile(student, trainset=examples, valset=examples)
+    with caplog.at_level(logging.INFO, logger="dspy.teleprompt.gepa.gepa"):
+        # Let logs propagate up to root because gepa uses try-catch and logs the error
+        # https://github.com/gepa-ai/gepa/blob/1b5eff5133be1015210e0512953c25a4b85ad454/src/gepa/proposer/reflective_mutation/reflective_mutation.py#L128
+        dspy_logger = logging.getLogger("dspy")
+        original_propagate = dspy_logger.propagate
+        dspy_logger.propagate = True
+
+        gepa.compile(student, trainset=examples, valset=examples)
+
+        dspy_logger.propagate = original_propagate
+
+        # Check that no internal GEPA reflection errors occurred
+        assert "Exception during reflection/proposal" not in caplog.text
 
     assert len(lm.history) > 0, "LM should have been called"
     assert len(reflection_lm.history) > 0, "Reflection LM should have been called"

@@ -58,7 +58,7 @@ class Tool(Type):
             arg_desc (Optional[dict[str, str]], optional): Descriptions for each arg, represented as a
                 dictionary from arg name to description string. Defaults to None.
 
-        Example:
+        Examples:
 
         ```python
         def foo(x: int, y: str = "hello"):
@@ -166,8 +166,11 @@ class Tool(Type):
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(coroutine)
+            # Run the coroutine outside of "except" block to avoid propagation
+            loop = None
 
+        if loop is None:
+            return asyncio.run(coroutine)
         return loop.run_until_complete(coroutine)
 
     @with_callbacks
@@ -179,8 +182,9 @@ class Tool(Type):
                 return self._run_async_in_sync(result)
             else:
                 raise ValueError(
-                    "You are calling `__call__` on an async tool, please use `acall` instead or set "
-                    "`allow_async=True` to run the async tool in sync mode."
+                    "You are calling `__call__` on an async tool, please use `acall` instead or enable "
+                    "async-to-sync conversion with `dspy.configure(allow_tool_async_sync_conversion=True)` "
+                    "or `with dspy.context(allow_tool_async_sync_conversion=True):`."
                 )
         return result
 
@@ -221,7 +225,7 @@ class Tool(Type):
         Returns:
             A Tool object.
 
-        Example:
+        Examples:
 
         ```python
         import asyncio
@@ -326,7 +330,7 @@ class ToolCalls(Type):
         Returns:
             A ToolCalls instance.
 
-        Example:
+        Examples:
 
             ```python
             tool_calls_dict = [

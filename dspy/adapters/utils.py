@@ -12,6 +12,8 @@ from pydantic import TypeAdapter
 from pydantic.fields import FieldInfo
 
 from dspy.adapters.types.base_type import Type as DspyType
+from dspy.adapters.types.code import Code
+from dspy.adapters.types.reasoning import Reasoning
 from dspy.signatures.utils import get_dspy_field_type
 
 
@@ -84,7 +86,7 @@ def _get_json_schema(field_type):
 def translate_field_type(field_name, field_info):
     field_type = field_info.annotation
 
-    if get_dspy_field_type(field_info) == "input" or field_type is str:
+    if get_dspy_field_type(field_info) == "input" or field_type is str or field_type is Reasoning:
         desc = ""
     elif field_type is bool:
         desc = "must be True or False"
@@ -99,6 +101,9 @@ def translate_field_type(field_name, field_info):
             # literal or returning a value of the form 'Literal[<selected_value>]'
             f"must exactly match (no extra characters) one of: {'; '.join([str(x) for x in field_type.__args__])}"
         )
+    elif inspect.isclass(field_type) and issubclass(field_type, Code) and field_type.description():
+        # Code has a rich type description already; avoid duplicating its large schema block.
+        desc = ""
     else:
         desc = f"must adhere to the JSON schema: {json.dumps(_get_json_schema(field_type), ensure_ascii=False)}"
 
@@ -190,6 +195,10 @@ def get_annotation_name(annotation):
     origin = get_origin(annotation)
     args = get_args(annotation)
     if origin is None:
+        if annotation is Reasoning:
+            # Keep backward compatibility with the old behavior in `dspy.ChainOfThought`, where reasoning
+            # field type is treated as a string.
+            return "str"
         if hasattr(annotation, "__name__"):
             return annotation.__name__
         else:

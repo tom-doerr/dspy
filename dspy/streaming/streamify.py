@@ -58,13 +58,13 @@ def streamify(
         A function that takes the same arguments as the original program, but returns an async
             generator that yields the program's outputs incrementally.
 
-    Example:
+    Examples:
 
     ```python
     import asyncio
     import dspy
 
-    dspy.settings.configure(lm=dspy.LM("openai/gpt-4o-mini"))
+    dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))
     # Create the program and wrap it with streaming functionality
     program = dspy.streamify(dspy.Predict("q->a"))
 
@@ -88,7 +88,7 @@ def streamify(
     import asyncio
     import dspy
 
-    dspy.settings.configure(lm=dspy.LM("openai/gpt-4o-mini"))
+    dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))
 
     class MyStatusMessageProvider(StatusMessageProvider):
         def module_start_status_message(self, instance, inputs):
@@ -121,7 +121,7 @@ def streamify(
     import asyncio
     import dspy
 
-    dspy.settings.configure(lm=dspy.LM("openai/gpt-4o-mini", cache=False))
+    dspy.configure(lm=dspy.LM("openai/gpt-4o-mini", cache=False))
 
     # Create the program and wrap it with streaming functionality
     predict = dspy.Predict("question->answer, reasoning")
@@ -161,7 +161,7 @@ def streamify(
     elif not iscoroutinefunction(program):
         program = asyncify(program)
 
-    callbacks = settings.callbacks
+    callbacks = list(settings.callbacks)
     status_streaming_callback = StatusStreamingCallback(status_message_provider)
     if not any(isinstance(c, StatusStreamingCallback) for c in callbacks):
         callbacks.append(status_streaming_callback)

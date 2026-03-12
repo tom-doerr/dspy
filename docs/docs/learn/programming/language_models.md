@@ -37,9 +37,47 @@ dspy.configure(lm=lm)
 
         ```python linenums="1"
         import dspy
-        lm = dspy.LM('anthropic/claude-3-opus-20240229', api_key='YOUR_ANTHROPIC_API_KEY')
+        lm = dspy.LM('anthropic/claude-sonnet-4-5-20250929', api_key='YOUR_ANTHROPIC_API_KEY')
         dspy.configure(lm=lm)
         ```
+
+    === "Vertex AI (GCP)"
+        For Google Cloud's Vertex AI, authenticate with a service account JSON key or Application Default Credentials. You can pass credentials directly in code or set environment variables.
+
+        ```python linenums="1"
+        import dspy
+        import json
+
+        # Load the service account JSON and convert to a string
+        with open("service_account.json") as f:
+            credentials = json.dumps(json.load(f))
+
+        lm = dspy.LM(
+            "vertex_ai/gemini-2.0-flash",
+            vertex_credentials=credentials,
+            vertex_project="your-gcp-project-id",
+            vertex_location="us-central1",
+        )
+        dspy.configure(lm=lm)
+        ```
+
+        Alternatively, set environment variables and skip the kwargs:
+
+        ```bash
+        export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service_account.json"
+        export VERTEXAI_PROJECT="your-gcp-project-id"
+        export VERTEXAI_LOCATION="us-central1"
+        ```
+
+        ```python linenums="1"
+        import dspy
+        lm = dspy.LM("vertex_ai/gemini-2.0-flash")
+        dspy.configure(lm=lm)
+        ```
+
+        !!! warning "Common pitfalls"
+            - Use the `vertex_ai/` model prefix, not `gemini/`. The `gemini/` prefix routes to the Gemini API which requires an API key instead of GCP credentials.
+            - Use `vertex_project` and `vertex_location`, not `project` or `location`. Parameters without the `vertex_` prefix are silently ignored and LiteLLM falls back to defaults, which may cause requests to land in an unintended region.
 
     === "Databricks"
         If you're on the Databricks platform, authentication is automatic via their SDK. If not, you can set the env variables `DATABRICKS_API_KEY` and `DATABRICKS_API_BASE`, or pass `api_key` and `api_base` below.
@@ -229,7 +267,7 @@ To enable the Responses API, just set `model_type="responses"` when creating the
 import dspy
 
 # Configure DSPy to use the Responses API for your language model
-dspy.settings.configure(
+dspy.configure(
     lm=dspy.LM(
         "openai/gpt-5-mini",
         model_type="responses",

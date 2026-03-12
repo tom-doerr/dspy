@@ -5,6 +5,7 @@
     handler: python
     options:
         members:
+            - adapt_to_native_lm_feature
             - description
             - extract_custom_type_from_annotation
             - format
@@ -21,5 +22,4 @@
         show_object_full_path: false
         separate_signature: false
         inherited_members: true
-:::
 <!-- END_API_REF -->

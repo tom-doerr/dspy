@@ -1,10 +1,16 @@
 import asyncio
 import contextvars
 import copy
+import logging
 import threading
 from contextlib import contextmanager
+from typing import Any
+
+import cloudpickle
 
 from dspy.dsp.utils.utils import dotdict
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG = dotdict(
     lm=None,
@@ -28,6 +34,7 @@ DEFAULT_CONFIG = dotdict(
     allow_tool_async_sync_conversion=False,
     max_history_size=10000,
     max_trace_size=10000,
+    warn_on_type_mismatch=True,  # Whether to log warnings when a module's input type doesn't match the signature type.
 )
 
 # Global base configuration and owner tracking
@@ -151,7 +158,7 @@ class Settings:
 
         if not in_ipython and config_owner_async_task != asyncio.current_task():
             raise RuntimeError(
-                "dspy.settings.configure(...) can only be called from the same async task that called it first. Please "
+                "dspy.configure(...) can only be called from the same async task that called it first. Please "
                 "use `dspy.context(...)` in other async tasks instead."
             )
 
@@ -184,6 +191,64 @@ class Settings:
         overrides = thread_local_overrides.get()
         combined_config = {**main_thread_config, **overrides}
         return repr(combined_config)
+
+    def save(
+        self, path: str,
+        modules_to_serialize: list[str] | None = None,
+        exclude_keys: list[str] | None = None,
+    ):
+        """
+        Save the settings to a file using cloudpickle.
+
+        Args:
+            path: The file path to save the settings to.
+            modules_to_serialize (list or None): A list of modules to serialize with cloudpickle's `register_pickle_by_value`.
+                If None, then no modules will be registered for serialization.
+            exclude_keys (list or None): A list of keys to exclude during saving.
+        """
+        logger.warning(
+            "`dspy.settings` are serialized using cloudpickle. Because cloudpickle allows for the "
+            "execution of arbitrary code during deserialization, you should only load files from "
+            "verified sources within a trusted environment."
+        )
+        try:
+            modules_to_serialize = modules_to_serialize or []
+            for module in modules_to_serialize:
+                cloudpickle.register_pickle_by_value(module)
+
+            exclude_keys = exclude_keys or []
+            data = {key: value for key, value in self.config.items() if key not in exclude_keys}
+            with open(path, "wb") as f:
+                cloudpickle.dump(data, f)
+        except Exception as e:
+            raise RuntimeError(
+                f"Saving failed with error: {e}. Please remove the non-picklable attributes from the values "
+                "in the `dspy.settings`."
+            )
+
+    @classmethod
+    def load(cls, path: str, allow_pickle: bool = False) -> dict[str, Any]:
+        """
+        Load the settings from a file using cloudpickle.
+
+        Args:
+            path: The file path to load the settings from.
+            allow_pickle: Whether to allow loading with pickle. Loading untrusted .pkl files
+                can run arbitrary code. Set to True only if you trust the source of the file.
+
+        Returns:
+            A dict that stores the loaded settings.
+        """
+        if not allow_pickle:
+            raise ValueError(
+                "Loading .pkl files can run arbitrary code, which may be dangerous. "
+                "Set `allow_pickle=True` if you trust the source of the file."
+            )
+
+        with open(path, "rb") as f:
+            configs = cloudpickle.load(f)
+
+        return configs
 
 
 settings = Settings()

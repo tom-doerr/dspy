@@ -8,6 +8,7 @@
             - __call__
             - execute
             - shutdown
+            - start
         show_source: true
         show_root_heading: true
         heading_level: 2
@@ -16,5 +17,4 @@
         show_object_full_path: false
         separate_signature: false
         inherited_members: true
-:::
 <!-- END_API_REF -->

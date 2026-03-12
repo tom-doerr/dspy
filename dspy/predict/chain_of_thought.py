@@ -6,6 +6,8 @@ import dspy
 from dspy.primitives.module import Module
 from dspy.signatures.signature import Signature, ensure_signature
 
+# NOTE: This restores the legacy rationale_field behavior after PR #8822.
+
 
 class ChainOfThought(Module):
     def __init__(
@@ -26,10 +28,9 @@ class ChainOfThought(Module):
         """
         super().__init__()
         signature = ensure_signature(signature)
-        prefix = "Reasoning: Let's think step by step in order to"
         desc = "${reasoning}"
         rationale_field_type = rationale_field.annotation if rationale_field else rationale_field_type
-        rationale_field = rationale_field if rationale_field else dspy.OutputField(prefix=prefix, desc=desc)
+        rationale_field = rationale_field if rationale_field else dspy.OutputField(desc=desc)
         extended_signature = signature.prepend(name="reasoning", field=rationale_field, type_=rationale_field_type)
         self.predict = dspy.Predict(extended_signature, **config)
 
