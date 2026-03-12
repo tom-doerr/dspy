@@ -103,6 +103,12 @@ def append_a_demo(demo_input_field_maxlen):
     return append_a_demo_
 
 
+def edit_rules(bucket, system, **kwargs):
+    """Generates search/replace edits to existing instructions instead of
+    always appending. Better for continuous optimization."""
+    return _edit_rules_impl(bucket, system, **kwargs)
+
+
 def append_a_rule(bucket, system, **kwargs):
     predictor2name = kwargs["predictor2name"]
     batch_10p_score, batch_90p_score = kwargs["batch_10p_score"], kwargs["batch_90p_score"]
@@ -247,3 +253,138 @@ def recursive_mask(o):
     # Otherwise, replace it with a placeholder string (or use repr(o)).
     else:
         return f"<non-serializable: {type(o).__name__}>"
+
+
+class EditRules(dspy.Signature):
+    """You will be given two trajectories and the current instructions
+    for each module. Generate search/replace edits to improve them.
+
+    Each edit is {"search": "...", "replace": "..."}.
+    Empty search = append. Replace with "" = delete.
+    Keep instructions concise. Remove redundant rules."""
+
+    program_code: str = InputField()
+    modules_defn: str = InputField()
+    current_instructions: str = InputField(
+        desc="Current instructions per module as JSON dict")
+    program_inputs: str = InputField()
+    oracle_metadata: str = InputField()
+    worse_program_trajectory: str = InputField()
+    worse_program_outputs: str = InputField()
+    worse_reward_value: float = InputField()
+    worse_reward_info: str = InputField()
+    better_program_trajectory: str = InputField()
+    better_program_outputs: str = InputField()
+    better_reward_value: float = InputField()
+    better_reward_info: str = InputField()
+    module_names: list[str] = InputField()
+    discussion: str = OutputField(
+        desc="Analyze what went wrong and which rules to change")
+    module_edits: dict[str, list[dict[str, str]]] = OutputField(
+        desc='Per module: [{"search": "...", "replace": "..."}] edits'
+    )
+
+
+def _edit_rules_impl(bucket, system, **kwargs):
+    predictor2name = kwargs["predictor2name"]
+    batch_10p_score = kwargs["batch_10p_score"]
+    batch_90p_score = kwargs["batch_90p_score"]
+    prompt_model = kwargs["prompt_model"] or dspy.settings.lm
+
+    module_names = [name for name, _ in system.named_predictors()]
+    good, bad = dict(bucket[0]), dict(bucket[-1])
+    example = good["example"]
+
+    if good["score"] <= batch_10p_score or bad["score"] >= batch_90p_score:
+        logger.info("Skipping rule editing: insufficient score contrast.")
+        return False
+
+    if good["score"] <= bad["score"]:
+        if good["score"] > batch_90p_score:
+            bad["trace"], bad["score"] = [], "N/A"
+            bad["prediction"] = {"N/A": "N/A"}
+        else:
+            good["trace"], good["score"] = [], "N/A"
+            good["prediction"] = {"N/A": "N/A"}
+
+    better_trajectory = [
+        {"module_name": predictor2name[id(p)], "inputs": i,
+         "outputs": dict(o)} for p, i, o in good["trace"]
+    ]
+    worse_trajectory = [
+        {"module_name": predictor2name[id(p)], "inputs": i,
+         "outputs": dict(o)} for p, i, o in bad["trace"]
+    ]
+
+    current_instructions = {
+        name: pred.signature.instructions
+        for name, pred in system.named_predictors()
+    }
+
+    ek = _build_edit_kwargs(
+        system, example, better_trajectory, worse_trajectory,
+        good, bad, module_names, current_instructions)
+    with dspy.settings.context(trace=[], lm=prompt_model):
+        edits = dspy.Predict(EditRules)(**ek).module_edits
+    return _apply_edits(system, edits)
+
+
+def _build_edit_kwargs(system, example, better_traj, worse_traj,
+                       good, bad, module_names, cur_instr):
+    d = {
+        "program_code": inspect.getsource(system.__class__),
+        "modules_defn": inspect_modules(system),
+        "current_instructions": cur_instr,
+        "program_inputs": {**example.inputs()},
+        "oracle_metadata": {**example.labels()},
+        "better_program_trajectory": better_traj,
+        "better_program_outputs": dict(good["prediction"]),
+        "worse_program_trajectory": worse_traj,
+        "worse_program_outputs": dict(bad["prediction"] or {}),
+        "worse_reward_value": bad["score"],
+        "better_reward_value": good["score"],
+        "worse_reward_info": bad["output_metadata"],
+        "better_reward_info": good["output_metadata"],
+        "module_names": module_names,
+    }
+    return {k: v if isinstance(v, str) else orjson.dumps(
+        recursive_mask(v), option=orjson.OPT_INDENT_2).decode()
+        for k, v in d.items()}
+
+
+def _apply_edits(system, edits):
+    applied = False
+    for name, predictor in system.named_predictors():
+        if name not in edits:
+            continue
+        edit_list = edits[name]
+        instr = predictor.signature.instructions
+        if isinstance(edit_list, str):
+            logger.info(f"Edit {name} (append): {edit_list[:80]}")
+            instr += "\n\n" + edit_list
+            applied = True
+        elif isinstance(edit_list, list):
+            instr, applied = _apply_edit_list(
+                name, instr, edit_list, applied)
+        predictor.signature = predictor.signature.with_instructions(instr)
+    return applied
+
+
+def _apply_edit_list(name, instr, edit_list, applied):
+    for edit in edit_list:
+        if not isinstance(edit, dict):
+            continue
+        search = edit.get("search", "")
+        replace = edit.get("replace", "")
+        if search and search in instr:
+            logger.info(f"Edit {name}: [{search[:50]}]→[{replace[:50]}]")
+            instr = instr.replace(search, replace, 1)
+            applied = True
+        elif replace:
+            if search:
+                logger.info(f"Edit {name}: miss, appending: {replace[:60]}")
+            else:
+                logger.info(f"Edit {name} (append): {replace[:60]}")
+            instr += "\n\n" + replace
+            applied = True
+    return instr, applied

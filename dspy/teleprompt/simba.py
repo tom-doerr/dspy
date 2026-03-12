@@ -7,7 +7,7 @@ from typing import Any, Callable
 import numpy as np
 
 import dspy
-from dspy.teleprompt.simba_utils import append_a_demo, append_a_rule, prepare_models_for_resampling, wrap_program
+from dspy.teleprompt.simba_utils import append_a_demo, append_a_rule, edit_rules, prepare_models_for_resampling, wrap_program
 from dspy.teleprompt.teleprompt import Teleprompter
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,7 @@ class SIMBA(Teleprompter):
         num_threads: int | None = None,
         temperature_for_sampling: float = 0.2,
         temperature_for_candidates: float = 0.2,
+        use_edit_rules: bool = False,
     ) -> None:
         """
         Initializes SIMBA.
@@ -77,10 +78,11 @@ class SIMBA(Teleprompter):
         self.temperature_for_sampling = temperature_for_sampling
         self.temperature_for_candidates = temperature_for_candidates
 
+        rule_strategy = edit_rules if use_edit_rules else append_a_rule
         if self.max_demos > 0:
-            self.strategies = [append_a_demo(demo_input_field_maxlen), append_a_rule]
+            self.strategies = [append_a_demo(demo_input_field_maxlen), rule_strategy]
         else:
-            self.strategies = [append_a_rule]
+            self.strategies = [rule_strategy]
 
     def compile(
         self,
