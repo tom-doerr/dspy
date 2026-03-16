@@ -223,8 +223,9 @@ class ParallelExecutor:
                 pbar.close()
 
         finally:
-            # Avoid waiting on leftover tasks that no longer matter
-            executor.shutdown(wait=False)
+            # Join pool threads so they don't leak across repeated evaluate() calls.
+            # cancel_futures=True cancels any pending work when cancel_jobs is set.
+            executor.shutdown(wait=True, cancel_futures=True)
 
         if self.cancel_jobs.is_set():
             logger.warning("Execution cancelled due to errors or interruption.")
