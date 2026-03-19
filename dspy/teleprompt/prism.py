@@ -37,7 +37,7 @@ class _GenKnowledge(dspy.Signature):
     """Generate novel knowledge to maximize reward (higher β = better).
     Generate SHORT, CONCISE, DIFFERENT pieces — no repeats."""
     pool: KnowledgePool = dspy.InputField(desc="Pieces with β/SE/n")
-    observation: str = dspy.InputField(desc="Sample data")
+    rollout: str = dspy.InputField(desc="Last rollout: input, knowledge used, output, score")
     new_knowledge: NewKnowledge = dspy.OutputField(desc="Short novel strings")
 
 
@@ -73,6 +73,7 @@ class _CreditModel:
 
 
 def _sample(pieces):
+    """Select pieces with positive uncertainty draw."""
     sel = [i for i, p in enumerate(pieces)
            if p.coef + p.stderr * np.random.randn() > 0]
     return sel if sel else [random.randrange(len(pieces))]
@@ -101,13 +102,14 @@ class PRISM(Teleprompter):
         random.seed(seed); np.random.seed(seed)
         ps = [_Piece(s) for s in self.initial_knowledge]
         cr, gn = _CreditModel(), dspy.Predict(_GenKnowledge) if self.gen_every else None
-        bs, bk, cands = -math.inf, "", []
+        bs, bk, cands, last_ro = -math.inf, "", [], ""
         for i in range(self.max_steps):
-            sc, k = self._step(student, trainset, ps, cr)
+            sc, k, ex, pred = self._step(student, trainset, ps, cr)
             if sc is None: continue
+            last_ro = f"Score={sc:.4f}\nKnowledge: {k}\nInput: {ex.inputs()}\nOutput: {pred}"
             cands.append({"score": sc, "knowledge": k})
             if sc > bs: bs, bk = sc, k
-            if gn and (i+1)%self.gen_every==0: self._gen(ps, gn, trainset)
+            if gn and (i+1)%self.gen_every==0: self._gen(ps, gn, last_ro)
             if (i+1)%10==0: logger.info(f"{i+1}/{self.max_steps} best={bs:.4f} pool={len(ps)}")
         return self._fin(student, bk, cands)
 
@@ -115,28 +117,28 @@ class PRISM(Teleprompter):
         ex = random.choice(trainset)
         sel = _sample(ps) if ps else []
         k = _build(ps, sel) if sel else ""
-        sc = self._eval(student, ex, k)
+        sc, pred = self._eval(student, ex, k)
         if sc is not None: self._upd(ps, sel, sc, cr)
-        return sc, k
+        return sc, k, ex, pred
 
     def _eval(self, student, ex, knowledge):
         try:
             pred = student(knowledge=knowledge, **ex.inputs())
             s = self.metric(ex, pred)
-            return float(s) if isinstance(s, (int, float)) else float(getattr(s, 'score', 0))
+            sc = float(s) if isinstance(s, (int, float)) else float(getattr(s, 'score', 0))
+            return sc, pred
         except Exception as e:
-            logger.warning(f"Eval: {e}"); return None
+            logger.warning(f"Eval: {e}"); return None, None
 
     def _upd(self, ps, sel, sc, cr):
         for i in sel: ps[i].n_sel += 1
         sv = [1.0 if i in set(sel) else 0.0 for i in range(len(ps))]
         cr.add(sv, sc); cr.update(ps)
 
-    def _gen(self, ps, gen, trainset):
+    def _gen(self, ps, gen, rollout):
         pool = KnowledgePool(items=[
             KnowledgePiece(content=p.content, beta=p.coef, se=p.stderr, n=p.n_sel) for p in ps])
-        ctx = str(random.choice(trainset).inputs())
-        kw = {"pool": pool, "observation": ctx}
+        kw = {"pool": pool, "rollout": rollout}
         if self.gen_lm: kw["lm"] = self.gen_lm
         try:
             r = gen(**kw)
