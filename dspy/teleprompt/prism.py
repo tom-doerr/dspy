@@ -73,9 +73,10 @@ class _CreditModel:
 
 
 def _sample(pieces, temp=1.0):
-    """Select pieces with positive uncertainty draw. temp scales SE."""
+    """Select pieces with positive uncertainty draw. temp scales SE.
+    Unseen pieces (n_sel=0) are always included for initial evaluation."""
     sel = [i for i, p in enumerate(pieces)
-           if p.coef + temp * p.stderr * np.random.randn() > 0]
+           if p.n_sel == 0 or p.coef + temp * p.stderr * np.random.randn() > 0]
     return sel if sel else [random.randrange(len(pieces))]
 
 
