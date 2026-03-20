@@ -72,10 +72,10 @@ class _CreditModel:
             if i+1 < len(c): p.coef, p.stderr = float(c[i+1]), float(se[i+1])
 
 
-def _sample(pieces):
-    """Select pieces with positive uncertainty draw."""
+def _sample(pieces, temp=1.0):
+    """Select pieces with positive uncertainty draw. temp scales SE."""
     sel = [i for i, p in enumerate(pieces)
-           if p.coef + p.stderr * np.random.randn() > 0]
+           if p.coef + temp * p.stderr * np.random.randn() > 0]
     return sel if sel else [random.randrange(len(pieces))]
 
 
@@ -89,7 +89,7 @@ class PRISM(Teleprompter):
     Optimizes knowledge via Ridge regression credit assignment,
     uncertainty-based subset selection, and LLM generation."""
     def __init__(self, *, metric, max_steps=100, gen_every=10,
-                 gen_lm=None, initial_knowledge=None, num_threads=1):
+                 gen_lm=None, initial_knowledge=None, num_threads=1, temp=1.0):
         super().__init__()
         self.metric = metric
         self.max_steps = max_steps
@@ -97,6 +97,7 @@ class PRISM(Teleprompter):
         self.gen_lm = gen_lm
         self.initial_knowledge = initial_knowledge or []
         self.num_threads = num_threads
+        self.temp = temp
 
     def compile(self, student, *, trainset, seed=0):
         random.seed(seed); np.random.seed(seed)
@@ -115,7 +116,7 @@ class PRISM(Teleprompter):
 
     def _step(self, student, trainset, ps, cr):
         ex = random.choice(trainset)
-        sel = _sample(ps) if ps else []
+        sel = _sample(ps, self.temp) if ps else []
         k = _build(ps, sel) if sel else ""
         sc, pred = self._eval(student, ex, k)
         if sc is not None: self._upd(ps, sel, sc, cr)
