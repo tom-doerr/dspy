@@ -29,16 +29,12 @@ class KnowledgePool(BaseModel):
     items: list[KnowledgePiece] = Field(default_factory=list)
     def __str__(self): return "\n".join(str(p) for p in self.items)
 
-class NewKnowledge(BaseModel):
-    items: list[str] = Field(default_factory=list)
-
-
 class _GenKnowledge(dspy.Signature):
     """Generate novel knowledge to maximize reward (higher β = better).
     Generate SHORT, CONCISE, DIFFERENT pieces — no repeats."""
     pool: KnowledgePool = dspy.InputField(desc="Pieces with β/SE/n")
     rollout: str = dspy.InputField(desc="Last rollout: input, knowledge used, output, score")
-    new_knowledge: NewKnowledge = dspy.OutputField(desc="Short novel strings")
+    new_knowledge: list[str] = dspy.OutputField(desc="Short novel strings")
 
 
 class _Piece:
@@ -152,10 +148,13 @@ class PRISM(Teleprompter):
         pool = KnowledgePool(items=[
             KnowledgePiece(content=p.content, beta=p.coef, se=p.stderr, n=p.n_sel) for p in ps])
         kw = {"pool": pool, "rollout": rollout}
-        if self.gen_lm: kw["lm"] = self.gen_lm
         try:
-            r = gen(**kw)
-            new = r.new_knowledge.items if hasattr(r.new_knowledge, 'items') else []
+            if self.gen_lm:
+                with dspy.context(lm=self.gen_lm):
+                    r = gen(**kw)
+            else:
+                r = gen(**kw)
+            new = r.new_knowledge if isinstance(r.new_knowledge, list) else []
             existing = {p.content for p in ps}
             for s in new:
                 s = s.strip() if isinstance(s, str) else str(s).strip()
