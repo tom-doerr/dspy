@@ -31,11 +31,19 @@ class KnowledgePool(BaseModel):
     items: list[KnowledgePiece] = Field(default_factory=list)
     def __str__(self): return "\n".join(str(p) for p in self.items)
 
+class Rollout(BaseModel):
+    """A single evaluation rollout with inputs, labels, and outputs."""
+    model_config = {"arbitrary_types_allowed": True}
+    score: float = 0.0
+    input: dict = Field(default_factory=dict)
+    expected: dict = Field(default_factory=dict)
+    output: dict = Field(default_factory=dict)
+
 class _GenKnowledge(dspy.Signature):
     """Generate novel knowledge to maximize reward (higher β = better).
     Generate SHORT, CONCISE, DIFFERENT pieces — no repeats."""
     pool: KnowledgePool = dspy.InputField(desc="Pieces with β/SE/n")
-    rollouts: dict = dspy.InputField(desc="Recent example: inputs, expected output, model output, score")
+    rollout: Rollout = dspy.InputField(desc="Recent example with score")
     new_knowledge: list[str] = dspy.OutputField(desc="3 short novel strings")
 
 
@@ -93,14 +101,14 @@ def _build(pieces, idxs):
 
 
 def _fmt_rollout(ex, pred, sc):
-    inp = {k: v for k, v in ex.inputs().items()}
+    inp = dict(ex.inputs())
     lbl = {k: getattr(ex, k, '')
            for k in (ex.labels() if hasattr(ex,'labels') else [])}
     out = {k: getattr(pred, k, '')
            for k in (pred.keys() if hasattr(pred,'keys') else [])
            if not k.startswith('_')}
-    return {"score": sc, "input": inp,
-            "expected": lbl, "output": out}
+    return Rollout(score=sc, input=inp,
+                   expected=lbl, output=out)
 
 
 class PRISM(Teleprompter):
@@ -128,7 +136,7 @@ class PRISM(Teleprompter):
         ps = [_Piece(s) for s in self.initial_knowledge]
         cr = _CreditModel(alpha=self.alpha, reg=self.reg)
         gn = dspy.Predict(_GenKnowledge) if self.gen_every else None
-        cands, last_ro, recent = [], "", []
+        cands, last_ro, recent = [], Rollout(), []
         gen_futs, gp = [], ThreadPoolExecutor(self.num_threads)
         for i in range(self.max_steps):
             self._collect_gen(ps, gen_futs)
@@ -200,7 +208,7 @@ class PRISM(Teleprompter):
             KnowledgePiece(content=p.content, beta=p.coef,
                 se=p.stderr, n=p.n_sel) for p in ps])
         try:
-            kw = {"pool": pool, "rollouts": rollout}
+            kw = {"pool": pool, "rollout": rollout}
             if self.gen_lm:
                 with dspy.context(lm=self.gen_lm):
                     r = gen(**kw)
