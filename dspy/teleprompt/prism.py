@@ -34,7 +34,7 @@ class _GenKnowledge(dspy.Signature):
     Generate SHORT, CONCISE, DIFFERENT pieces — no repeats."""
     pool: KnowledgePool = dspy.InputField(desc="Pieces with β/SE/n")
     rollout: str = dspy.InputField(desc="Last rollout: input, knowledge used, output, score")
-    new_knowledge: list[str] = dspy.OutputField(desc="Short novel strings")
+    new_knowledge: list[str] = dspy.OutputField(desc="3 short novel strings")
 
 
 class _Piece:
