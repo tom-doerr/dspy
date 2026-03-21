@@ -35,7 +35,7 @@ class _GenKnowledge(dspy.Signature):
     """Generate novel knowledge to maximize reward (higher β = better).
     Generate SHORT, CONCISE, DIFFERENT pieces — no repeats."""
     pool: KnowledgePool = dspy.InputField(desc="Pieces with β/SE/n")
-    rollout: str = dspy.InputField(desc="Last rollout: input, knowledge used, output, score")
+    rollouts: str = dspy.InputField(desc="Recent examples: inputs, expected output, model output, score")
     new_knowledge: list[str] = dspy.OutputField(desc="3 short novel strings")
 
 
@@ -92,6 +92,17 @@ def _build(pieces, idxs):
     return "\n".join(pieces[i].content for i in idxs)
 
 
+def _fmt_rollout(ex, pred, sc):
+    inp = {k: str(v)[:200] for k, v in ex.inputs().items()}
+    lbl = {k: str(getattr(ex, k, ''))[:200]
+           for k in (ex.labels() if hasattr(ex,'labels') else [])}
+    out = {k: str(getattr(pred, k, ''))[:200]
+           for k in (pred.keys() if hasattr(pred,'keys') else [])
+           if not k.startswith('_')}
+    return (f"Score: {sc:.3f}\n  Input: {inp}"
+            f"\n  Expected: {lbl}\n  Got: {out}")
+
+
 class PRISM(Teleprompter):
     """Pool Regression Inference Selection Model.
 
@@ -129,7 +140,7 @@ class PRISM(Teleprompter):
                 if sc is None: continue
                 self._upd(ps, sel, sc, cr)
                 recent.append(sc)
-                last_ro = f"Score={sc:.4f}\nKnowledge: {k}"
+                last_ro = _fmt_rollout(ex, pred, sc)
                 cands.append({"score": sc, "knowledge": k})
             if gn and (i+1)%self.gen_every==0:
                 gen_futs.append(gp.submit(
@@ -189,7 +200,7 @@ class PRISM(Teleprompter):
             KnowledgePiece(content=p.content, beta=p.coef,
                 se=p.stderr, n=p.n_sel) for p in ps])
         try:
-            kw = {"pool": pool, "rollout": rollout}
+            kw = {"pool": pool, "rollouts": rollout}
             if self.gen_lm:
                 with dspy.context(lm=self.gen_lm):
                     r = gen(**kw)
