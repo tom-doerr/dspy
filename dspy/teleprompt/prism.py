@@ -141,7 +141,7 @@ class PRISM(Teleprompter):
                         f" gen={len(gen_futs)}")
         self._collect_gen(ps, gen_futs, wait=True)
         gp.shutdown(wait=True)
-        return self._fin(student, cands, ps)
+        return self._finalize(student, cands, ps)
 
     def _step_batch(self, student, trainset, ps, n):
         jobs = []
@@ -208,7 +208,7 @@ class PRISM(Teleprompter):
                     ps.append(_Piece(s))
                     existing.add(s)
 
-    def _fin(self, student, cands, ps):
+    def _finalize(self, student, cands, ps):
         import copy
         best = copy.deepcopy(student)
         best.candidate_programs = sorted(
