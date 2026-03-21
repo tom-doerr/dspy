@@ -48,9 +48,10 @@ class _Piece:
 
 
 class _CreditModel:
-    """Ridge regression with intercept: reward ~ Σ piece_i."""
-    def __init__(self, alpha=1.0):
+    """Linear regression credit assignment: reward ~ Σ piece_i."""
+    def __init__(self, alpha=1.0, reg="ridge"):
         self.X, self.y, self.alpha = [], [], alpha
+        self.reg = reg  # "ridge" (L2) or "lasso" (L1)
 
     def add(self, sv, reward):
         self.X.append(sv); self.y.append(reward)
@@ -58,25 +59,31 @@ class _CreditModel:
     def update(self, pieces):
         if len(self.y) < 3: return
         n = len(pieces)
-        Xr = np.array([list(r)[:n]+[0]*max(0,n-len(r)) for r in self.X], dtype=np.float64)
-        X = np.hstack([np.ones((len(Xr),1)), Xr])
-        y, m = np.array(self.y), n+1
-        A = X.T@X + self.alpha*np.eye(m)
-        A[0,0] = (X[:,0]**2).sum()
-        try: c = np.linalg.solve(A, X.T@y)
-        except np.linalg.LinAlgError: return
-        s2 = np.sum((y-X@c)**2)/max(1,len(y)-m)
-        try: se = np.sqrt(np.maximum(np.diag(s2*np.linalg.inv(A)),1e-8))
-        except np.linalg.LinAlgError: se = np.ones(m)
+        X = np.array([list(r)[:n]+[0]*max(0,n-len(r)) for r in self.X], dtype=np.float64)
+        y = np.array(self.y)
+        if self.reg == "lasso":
+            from sklearn.linear_model import Lasso
+            model = Lasso(alpha=self.alpha, fit_intercept=True, max_iter=1000)
+        else:
+            from sklearn.linear_model import Ridge
+            model = Ridge(alpha=self.alpha, fit_intercept=True)
+        model.fit(X, y)
+        resid = y - model.predict(X)
+        s2 = np.sum(resid**2) / max(1, len(y) - n - 1)
+        se = np.sqrt(s2 / (np.sum(X**2, axis=0) + 1e-8))
         for i, p in enumerate(pieces):
-            if i+1 < len(c): p.coef, p.stderr = float(c[i+1]), float(se[i+1])
+            if i < len(model.coef_):
+                p.coef = float(model.coef_[i])
+                p.stderr = float(se[i])
 
 
 def _sample(pieces, temp=1.0):
-    """Select pieces with positive uncertainty draw. temp scales SE.
-    Unseen pieces (n_sel=0) are always included for initial evaluation."""
-    sel = [i for i, p in enumerate(pieces)
-           if p.n_sel == 0 or p.coef + temp * p.stderr * np.random.randn() > 0]
+    """Select pieces with positive draw. Unseen always included."""
+    sel = []
+    for i, p in enumerate(pieces):
+        if p.n_sel == 0: sel.append(i); continue
+        draw = p.coef + temp * p.stderr * np.random.randn() if temp > 0 else p.coef
+        if draw > 0: sel.append(i)
     return sel if sel else [random.randrange(len(pieces))]
 
 
@@ -90,7 +97,8 @@ class PRISM(Teleprompter):
     Optimizes knowledge via Ridge regression credit assignment,
     uncertainty-based subset selection, and LLM generation."""
     def __init__(self, *, metric, max_steps=100, gen_every=10,
-                 gen_lm=None, initial_knowledge=None, num_threads=1, temp=1.0):
+                 gen_lm=None, initial_knowledge=None, num_threads=1,
+                 temp=1.0, reg="ridge", alpha=1.0):
         super().__init__()
         self.metric = metric
         self.max_steps = max_steps
@@ -99,11 +107,14 @@ class PRISM(Teleprompter):
         self.initial_knowledge = initial_knowledge or []
         self.num_threads = num_threads
         self.temp = temp
+        self.reg = reg
+        self.alpha = alpha
 
     def compile(self, student, *, trainset, seed=0):
         random.seed(seed); np.random.seed(seed)
         ps = [_Piece(s) for s in self.initial_knowledge]
-        cr, gn = _CreditModel(), dspy.Predict(_GenKnowledge) if self.gen_every else None
+        cr = _CreditModel(alpha=self.alpha, reg=self.reg)
+        gn = dspy.Predict(_GenKnowledge) if self.gen_every else None
         bs, bk, cands, last_ro = -math.inf, "", [], ""
         for i in range(self.max_steps):
             sc, k, ex, pred = self._step(student, trainset, ps, cr)
