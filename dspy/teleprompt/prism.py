@@ -116,7 +116,7 @@ class PRISM(Teleprompter):
         ps = [_Piece(s) for s in self.initial_knowledge]
         cr = _CreditModel(alpha=self.alpha, reg=self.reg)
         gn = dspy.Predict(_GenKnowledge) if self.gen_every else None
-        bs, bk, cands, last_ro = -math.inf, "", [], ""
+        cands, last_ro, recent = [], "", []
         gen_futs, gp = [], ThreadPoolExecutor(self.num_threads)
         for i in range(self.max_steps):
             self._collect_gen(ps, gen_futs)
@@ -127,20 +127,21 @@ class PRISM(Teleprompter):
             for sc, k, sel, ex, pred in res:
                 if sc is None: continue
                 self._upd(ps, sel, sc, cr)
+                recent.append(sc)
                 last_ro = f"Score={sc:.4f}\nKnowledge: {k}"
                 cands.append({"score": sc, "knowledge": k})
-                if sc > bs: bs, bk = sc, k
             if gn and (i+1)%self.gen_every==0:
                 gen_futs.append(gp.submit(
                     self._gen_async, ps, gn, last_ro))
             scs = [r[0] for r in res if r[0] is not None]
             avg = np.mean(scs) if scs else 0
+            ra = np.mean(recent[-50:]) if recent else 0
             logger.info(f"{i+1}/{self.max_steps} avg={avg:.3f}"
-                        f" best={bs:.4f} pool={len(ps)}"
+                        f" ra50={ra:.3f} pool={len(ps)}"
                         f" gen={len(gen_futs)}")
         self._collect_gen(ps, gen_futs, wait=True)
         gp.shutdown(wait=True)
-        return self._fin(student, bk, cands, ps)
+        return self._fin(student, cands, ps)
 
     def _step_batch(self, student, trainset, ps, n):
         jobs = []
@@ -207,16 +208,17 @@ class PRISM(Teleprompter):
                     ps.append(_Piece(s))
                     existing.add(s)
 
-    def _fin(self, student, best_k, cands, ps):
+    def _fin(self, student, cands, ps):
         import copy
         best = copy.deepcopy(student)
         best.candidate_programs = sorted(
             cands, key=lambda c: c["score"], reverse=True)[:10]
-        best._prism_knowledge = best_k
+        ranked = sorted(ps, key=lambda p: p.coef, reverse=True)
+        pos = [p for p in ranked if p.coef > 0]
+        best._prism_knowledge = "\n".join(p.content for p in
+            (pos if pos else ranked[:4]))
         best._prism_pieces = [
             {"content": p.content, "beta": p.coef,
-             "se": p.stderr, "n": p.n_sel}
-            for p in sorted(ps, key=lambda p: p.coef,
-                             reverse=True)
+             "se": p.stderr, "n": p.n_sel} for p in ranked
         ]
         return best
