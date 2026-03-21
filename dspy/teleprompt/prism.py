@@ -35,7 +35,7 @@ class _GenKnowledge(dspy.Signature):
     """Generate novel knowledge to maximize reward (higher β = better).
     Generate SHORT, CONCISE, DIFFERENT pieces — no repeats."""
     pool: KnowledgePool = dspy.InputField(desc="Pieces with β/SE/n")
-    rollouts: str = dspy.InputField(desc="Recent examples: inputs, expected output, model output, score")
+    rollouts: dict = dspy.InputField(desc="Recent example: inputs, expected output, model output, score")
     new_knowledge: list[str] = dspy.OutputField(desc="3 short novel strings")
 
 
@@ -93,17 +93,14 @@ def _build(pieces, idxs):
 
 
 def _fmt_rollout(ex, pred, sc):
-    skip = (dspy.Image, bytes, memoryview)
-    inp = {k: str(v)[:500] for k, v in ex.inputs().items()
-           if not isinstance(v, skip)}
-    lbl = {k: str(getattr(ex, k, ''))[:500]
-           for k in (ex.labels() if hasattr(ex,'labels') else [])
-           if not isinstance(getattr(ex, k, None), skip)}
-    out = {k: str(getattr(pred, k, ''))[:500]
+    inp = {k: v for k, v in ex.inputs().items()}
+    lbl = {k: getattr(ex, k, '')
+           for k in (ex.labels() if hasattr(ex,'labels') else [])}
+    out = {k: getattr(pred, k, '')
            for k in (pred.keys() if hasattr(pred,'keys') else [])
            if not k.startswith('_')}
-    return (f"Score: {sc:.3f}\n  Input: {inp}"
-            f"\n  Expected: {lbl}\n  Got: {out}")
+    return {"score": sc, "input": inp,
+            "expected": lbl, "output": out}
 
 
 class PRISM(Teleprompter):
