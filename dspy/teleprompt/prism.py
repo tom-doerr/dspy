@@ -111,6 +111,16 @@ def _fmt_rollout(ex, pred, sc):
                    expected=lbl, output=out)
 
 
+def _set_instructions(prog, knowledge):
+    """Append knowledge to all predictor instructions."""
+    if not knowledge:
+        return
+    for _, pred in prog.named_predictors():
+        base = pred.signature.instructions
+        pred.signature = pred.signature.with_instructions(
+            base + "\n\n" + knowledge)
+
+
 class PRISM(Teleprompter):
     """Pool Regression Inference Selection Model.
 
@@ -185,8 +195,11 @@ class PRISM(Teleprompter):
         return out
 
     def _eval(self, student, ex, knowledge):
+        import copy
         try:
-            pred = student(knowledge=knowledge, **ex.inputs())
+            prog = copy.deepcopy(student)
+            _set_instructions(prog, knowledge)
+            pred = prog(**ex.inputs())
             s = self.metric(ex, pred)
             if self.reward_fn:
                 sc = float(self.reward_fn(ex, pred))
@@ -239,8 +252,10 @@ class PRISM(Teleprompter):
             cands, key=lambda c: c["score"], reverse=True)[:10]
         ranked = sorted(ps, key=lambda p: p.coef, reverse=True)
         pos = [p for p in ranked if p.coef > 0]
-        best._prism_knowledge = "\n".join(p.content for p in
+        knowledge = "\n".join(p.content for p in
             (pos if pos else ranked[:4]))
+        _set_instructions(best, knowledge)
+        best._prism_knowledge = knowledge
         best._prism_pieces = [
             {"content": p.content, "beta": p.coef,
              "se": p.stderr, "n": p.n_sel} for p in ranked
