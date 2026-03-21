@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import math
 import random
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, List
 
 import numpy as np
@@ -115,23 +117,51 @@ class PRISM(Teleprompter):
         cr = _CreditModel(alpha=self.alpha, reg=self.reg)
         gn = dspy.Predict(_GenKnowledge) if self.gen_every else None
         bs, bk, cands, last_ro = -math.inf, "", [], ""
+        gen_futs, gp = [], ThreadPoolExecutor(self.num_threads)
         for i in range(self.max_steps):
-            sc, k, ex, pred = self._step(student, trainset, ps, cr)
-            if sc is None: continue
-            last_ro = f"Score={sc:.4f}\nKnowledge: {k}\nInput: {ex.inputs()}\nOutput: {pred}"
-            cands.append({"score": sc, "knowledge": k})
-            if sc > bs: bs, bk = sc, k
-            if gn and (i+1)%self.gen_every==0: self._gen(ps, gn, last_ro)
-            if (i+1)%10==0: logger.info(f"{i+1}/{self.max_steps} best={bs:.4f} pool={len(ps)}")
+            self._collect_gen(ps, gen_futs)
+            n_gen = sum(1 for f in gen_futs if not f.done())
+            n_eval = max(1, self.num_threads - n_gen)
+            res = self._step_batch(student, trainset, ps,
+                                   n_eval)
+            for sc, k, sel, ex, pred in res:
+                if sc is None: continue
+                self._upd(ps, sel, sc, cr)
+                last_ro = f"Score={sc:.4f}\nKnowledge: {k}"
+                cands.append({"score": sc, "knowledge": k})
+                if sc > bs: bs, bk = sc, k
+            if gn and (i+1)%self.gen_every==0:
+                gen_futs.append(gp.submit(
+                    self._gen_async, ps, gn, last_ro))
+            scs = [r[0] for r in res if r[0] is not None]
+            avg = np.mean(scs) if scs else 0
+            logger.info(f"{i+1}/{self.max_steps} avg={avg:.3f}"
+                        f" best={bs:.4f} pool={len(ps)}"
+                        f" gen={len(gen_futs)}")
+        self._collect_gen(ps, gen_futs, wait=True)
+        gp.shutdown(wait=True)
         return self._fin(student, bk, cands, ps)
 
-    def _step(self, student, trainset, ps, cr):
-        ex = random.choice(trainset)
-        sel = _sample(ps, self.temp) if ps else []
-        k = _build(ps, sel) if sel else ""
-        sc, pred = self._eval(student, ex, k)
-        if sc is not None: self._upd(ps, sel, sc, cr)
-        return sc, k, ex, pred
+    def _step_batch(self, student, trainset, ps, n):
+        jobs = []
+        for _ in range(n):
+            ex = random.choice(trainset)
+            sel = _sample(ps, self.temp) if ps else []
+            k = _build(ps, sel) if sel else ""
+            jobs.append((ex, sel, k))
+        if n <= 1:
+            ex, sel, k = jobs[0]
+            sc, pred = self._eval(student, ex, k)
+            return [(sc, k, sel, ex, pred)]
+        out = []
+        with ThreadPoolExecutor(n) as tp:
+            fs = {tp.submit(self._eval, student, ex, k):
+                  (sel, k, ex) for ex, sel, k in jobs}
+            for f in as_completed(fs):
+                sel, k, ex = fs[f]
+                sc, pred = f.result()
+                out.append((sc, k, sel, ex, pred))
+        return out
 
     def _eval(self, student, ex, knowledge):
         try:
@@ -147,23 +177,35 @@ class PRISM(Teleprompter):
         sv = [1.0 if i in set(sel) else 0.0 for i in range(len(ps))]
         cr.add(sv, sc); cr.update(ps)
 
-    def _gen(self, ps, gen, rollout):
+    def _gen_async(self, ps, gen, rollout):
+        """Background thread: return new knowledge strings."""
         pool = KnowledgePool(items=[
-            KnowledgePiece(content=p.content, beta=p.coef, se=p.stderr, n=p.n_sel) for p in ps])
-        kw = {"pool": pool, "rollout": rollout}
+            KnowledgePiece(content=p.content, beta=p.coef,
+                se=p.stderr, n=p.n_sel) for p in ps])
         try:
+            kw = {"pool": pool, "rollout": rollout}
             if self.gen_lm:
                 with dspy.context(lm=self.gen_lm):
                     r = gen(**kw)
             else:
                 r = gen(**kw)
-            new = r.new_knowledge if isinstance(r.new_knowledge, list) else []
-            existing = {p.content for p in ps}
-            for s in new:
-                s = s.strip() if isinstance(s, str) else str(s).strip()
-                if s and s not in existing: ps.append(_Piece(s)); existing.add(s)
+            out = r.new_knowledge
+            return out if isinstance(out, list) else []
         except Exception as e:
-            logger.warning(f"Gen: {e}")
+            logger.warning(f"Gen: {e}"); return []
+
+    def _collect_gen(self, ps, futs, wait=False):
+        """Harvest finished gen futures into the pool."""
+        done = [f for f in futs if f.done() or wait]
+        existing = {p.content for p in ps}
+        for f in done:
+            futs.remove(f)
+            for s in (f.result() or []):
+                s = s.strip() if isinstance(s, str) \
+                    else str(s).strip()
+                if s and s not in existing:
+                    ps.append(_Piece(s))
+                    existing.add(s)
 
     def _fin(self, student, best_k, cands, ps):
         import copy
