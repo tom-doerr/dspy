@@ -97,11 +97,12 @@ class PRISM(Teleprompter):
 
     Optimizes knowledge via Ridge regression credit assignment,
     uncertainty-based subset selection, and LLM generation."""
-    def __init__(self, *, metric, max_steps=100, gen_every=10,
-                 gen_lm=None, initial_knowledge=None, num_threads=1,
-                 temp=1.0, reg="ridge", alpha=1.0):
+    def __init__(self, *, metric, reward_fn=None, max_steps=100,
+                 gen_every=10, gen_lm=None, initial_knowledge=None,
+                 num_threads=1, temp=1.0, reg="ridge", alpha=1.0):
         super().__init__()
         self.metric = metric
+        self.reward_fn = reward_fn
         self.max_steps = max_steps
         self.gen_every = gen_every
         self.gen_lm = gen_lm
@@ -168,7 +169,11 @@ class PRISM(Teleprompter):
         try:
             pred = student(knowledge=knowledge, **ex.inputs())
             s = self.metric(ex, pred)
-            sc = float(s) if isinstance(s, (int, float)) else float(getattr(s, 'score', 0))
+            if self.reward_fn:
+                sc = float(self.reward_fn(ex, pred))
+            else:
+                sc = float(s) if isinstance(s, (int, float)) \
+                    else float(getattr(s, 'score', 0))
             return sc, pred
         except Exception as e:
             logger.warning(f"Eval: {e}"); return None, None
