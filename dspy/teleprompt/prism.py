@@ -66,7 +66,10 @@ class _CreditModel:
         model.fit(X, y)
         resid = y - model.predict(X)
         s2 = np.sum(resid**2) / max(1, len(y) - n - 1)
-        se = np.sqrt(s2 / (np.sum(X**2, axis=0) + 1e-8))
+        XtX = X.T @ X
+        A_inv = np.linalg.inv(XtX + self.alpha * np.eye(n))
+        cov = s2 * (A_inv @ XtX @ A_inv)
+        se = np.sqrt(np.maximum(np.diag(cov), 0.0))
         for i, p in enumerate(pieces):
             if i < len(model.coef_):
                 p.coef = float(model.coef_[i])
@@ -120,7 +123,7 @@ class PRISM(Teleprompter):
             if sc > bs: bs, bk = sc, k
             if gn and (i+1)%self.gen_every==0: self._gen(ps, gn, last_ro)
             if (i+1)%10==0: logger.info(f"{i+1}/{self.max_steps} best={bs:.4f} pool={len(ps)}")
-        return self._fin(student, bk, cands)
+        return self._fin(student, bk, cands, ps)
 
     def _step(self, student, trainset, ps, cr):
         ex = random.choice(trainset)
@@ -162,10 +165,16 @@ class PRISM(Teleprompter):
         except Exception as e:
             logger.warning(f"Gen: {e}")
 
-    def _fin(self, student, best_k, cands):
+    def _fin(self, student, best_k, cands, ps):
         import copy
         best = copy.deepcopy(student)
-        best.candidate_programs = sorted(cands, key=lambda c: c["score"], reverse=True)[:10]
+        best.candidate_programs = sorted(
+            cands, key=lambda c: c["score"], reverse=True)[:10]
         best._prism_knowledge = best_k
-        best._prism_pieces = None  # set below if available
+        best._prism_pieces = [
+            {"content": p.content, "beta": p.coef,
+             "se": p.stderr, "n": p.n_sel}
+            for p in sorted(ps, key=lambda p: p.coef,
+                             reverse=True)
+        ]
         return best
