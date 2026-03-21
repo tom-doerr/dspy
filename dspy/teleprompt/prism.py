@@ -93,10 +93,13 @@ def _build(pieces, idxs):
 
 
 def _fmt_rollout(ex, pred, sc):
-    inp = {k: str(v)[:200] for k, v in ex.inputs().items()}
-    lbl = {k: str(getattr(ex, k, ''))[:200]
-           for k in (ex.labels() if hasattr(ex,'labels') else [])}
-    out = {k: str(getattr(pred, k, ''))[:200]
+    skip = (dspy.Image, bytes, memoryview)
+    inp = {k: str(v)[:500] for k, v in ex.inputs().items()
+           if not isinstance(v, skip)}
+    lbl = {k: str(getattr(ex, k, ''))[:500]
+           for k in (ex.labels() if hasattr(ex,'labels') else [])
+           if not isinstance(getattr(ex, k, None), skip)}
+    out = {k: str(getattr(pred, k, ''))[:500]
            for k in (pred.keys() if hasattr(pred,'keys') else [])
            if not k.startswith('_')}
     return (f"Score: {sc:.3f}\n  Input: {inp}"
