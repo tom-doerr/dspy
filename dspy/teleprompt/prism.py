@@ -225,9 +225,10 @@ class PRISM(Teleprompter):
 
     def _gen_async(self, ps, gen, rollout):
         """Background thread: return new knowledge strings."""
+        src = [p for p in ps if p.coef > 0 or p.n_sel == 0]
         pool = KnowledgePool(items=[
             KnowledgePiece(content=p.content, beta=p.coef,
-                se=p.stderr, n=p.n_sel) for p in ps])
+                se=p.stderr, n=p.n_sel) for p in src])
         try:
             kw = {"pool": pool, "rollout": rollout}
             if self.gen_lm:
