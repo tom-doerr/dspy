@@ -54,36 +54,46 @@ class _Piece:
 
 
 class _CreditModel:
-    """Linear regression credit assignment: reward ~ Σ piece_i."""
-    def __init__(self, alpha=1.0, reg="ridge"):
-        self.X, self.y, self.alpha = [], [], alpha
-        self.reg = reg  # "ridge" (L2) or "lasso" (L1)
+    """Ridge with CV-optimized α: reward ~ Σ piece_i."""
+    def __init__(self, **kw):
+        self.X, self.y = [], []
+        self.log_alpha = 0.0
 
     def add(self, sv, reward):
         self.X.append(sv); self.y.append(reward)
 
+    def _loo_cv(self, Xb, y, alpha):
+        A = Xb.T @ Xb + alpha * np.eye(Xb.shape[1])
+        H = Xb @ np.linalg.inv(A) @ Xb.T
+        resid = y - H @ y
+        h = np.diag(H)
+        return np.mean((resid / (1 - h + 1e-10)) ** 2)
+
     def update(self, pieces):
         if len(self.y) < 3: return
         n = len(pieces)
-        X = np.array([list(r)[:n]+[0]*max(0,n-len(r)) for r in self.X], dtype=np.float64)
+        X = np.array([list(r)[:n]+[0]*max(0,n-len(r))
+                       for r in self.X], dtype=np.float64)
+        Xb = np.column_stack([X, np.ones(len(X))])
         y = np.array(self.y)
-        if self.reg == "lasso":
-            from sklearn.linear_model import Lasso
-            model = Lasso(alpha=self.alpha, fit_intercept=True, max_iter=1000)
-        else:
-            from sklearn.linear_model import Ridge
-            model = Ridge(alpha=self.alpha, fit_intercept=True)
-        model.fit(X, y)
-        resid = y - model.predict(X)
-        s2 = np.sum(resid**2) / max(1, len(y) - n - 1)
-        XtX = X.T @ X
-        A_inv = np.linalg.inv(XtX + self.alpha * np.eye(n))
-        cov = s2 * (A_inv @ XtX @ A_inv)
-        se = np.sqrt(np.maximum(np.diag(cov), 0.0))
+        cv0 = self._loo_cv(Xb, y, np.exp(self.log_alpha))
+        for _ in range(5):
+            la = self.log_alpha + np.random.randn() * 0.5
+            cv = self._loo_cv(Xb, y, np.exp(la))
+            if cv < cv0:
+                self.log_alpha = la; cv0 = cv
+        alpha = np.exp(self.log_alpha)
+        nc = Xb.shape[1]
+        A = Xb.T @ Xb + alpha * np.eye(nc)
+        Ainv = np.linalg.inv(A)
+        coefs = Ainv @ Xb.T @ y
+        resid = y - Xb @ coefs
+        s2 = np.sum(resid**2) / max(1, len(y) - nc)
+        cov = s2 * Ainv
         for i, p in enumerate(pieces):
-            if i < len(model.coef_):
-                p.coef = float(model.coef_[i])
-                p.stderr = float(se[i])
+            if i < n:
+                p.coef = float(coefs[i])
+                p.stderr = float(np.sqrt(max(0, cov[i,i])))
 
 
 def _sample(pieces, temp=1.0):
@@ -128,7 +138,7 @@ class PRISM(Teleprompter):
     uncertainty-based subset selection, and LLM generation."""
     def __init__(self, *, metric, reward_fn=None, max_steps=100,
                  gen_every=10, gen_lm=None, initial_knowledge=None,
-                 num_threads=1, temp=1.0, reg="ridge", alpha=1.0):
+                 num_threads=1, temp=1.0, **kw):
         super().__init__()
         self.metric = metric
         self.reward_fn = reward_fn
@@ -138,13 +148,11 @@ class PRISM(Teleprompter):
         self.initial_knowledge = initial_knowledge or []
         self.num_threads = num_threads
         self.temp = temp
-        self.reg = reg
-        self.alpha = alpha
 
     def compile(self, student, *, trainset, seed=0):
         random.seed(seed); np.random.seed(seed)
         ps = [_Piece(s) for s in self.initial_knowledge]
-        cr = _CreditModel(alpha=self.alpha, reg=self.reg)
+        cr = _CreditModel()
         gn = dspy.Predict(_GenKnowledge) if self.gen_every else None
         cands, last_ro, recent = [], Rollout(), []
         gen_futs, gp = [], ThreadPoolExecutor(self.num_threads)
