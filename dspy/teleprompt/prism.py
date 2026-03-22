@@ -219,6 +219,7 @@ class PRISM(Teleprompter):
             logger.warning(f"Eval: {e}"); return None, None
 
     def _upd(self, ps, sel, sc, cr):
+        if not math.isfinite(sc): return
         for i in sel: ps[i].n_sel += 1
         sv = [1.0 if i in set(sel) else 0.0 for i in range(len(ps))]
         cr.add(sv, sc); cr.update(ps)
