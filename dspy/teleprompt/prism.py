@@ -34,16 +34,17 @@ class KnowledgePool(BaseModel):
 class Rollout(BaseModel):
     """A single evaluation rollout with inputs, labels, and outputs."""
     model_config = {"arbitrary_types_allowed": True}
-    score: float = 0.0
     input: dict = Field(default_factory=dict)
-    expected: dict = Field(default_factory=dict)
     output: dict = Field(default_factory=dict)
+    expected: dict = Field(default_factory=dict)
+    score: float = 0.0
 
 class _GenKnowledge(dspy.Signature):
     """Generate novel knowledge to maximize reward (higher β = better).
     Generate SHORT, CONCISE, DIFFERENT pieces — no repeats."""
     pool: KnowledgePool = dspy.InputField(desc="Pieces with β/SE/n")
     rollout: Rollout = dspy.InputField(desc="Recent example with score")
+    reasoning: str = dspy.OutputField(desc="What patterns help/hurt? What's missing?")
     new_knowledge: list[str] = dspy.OutputField(desc="3 short novel strings")
 
 
@@ -63,7 +64,9 @@ class _CreditModel:
         self.X.append(sv); self.y.append(reward)
 
     def _loo_cv(self, Xb, y, alpha):
-        A = Xb.T @ Xb + alpha * np.eye(Xb.shape[1])
+        penalty = alpha * np.eye(Xb.shape[1])
+        penalty[-1, -1] = 0
+        A = Xb.T @ Xb + penalty
         H = Xb @ np.linalg.inv(A) @ Xb.T
         resid = y - H @ y
         h = np.diag(H)
@@ -84,7 +87,9 @@ class _CreditModel:
                 self.log_alpha = la; cv0 = cv
         alpha = np.exp(self.log_alpha)
         nc = Xb.shape[1]
-        A = Xb.T @ Xb + alpha * np.eye(nc)
+        penalty = alpha * np.eye(nc)
+        penalty[-1, -1] = 0  # don't regularize intercept
+        A = Xb.T @ Xb + penalty
         Ainv = np.linalg.inv(A)
         coefs = Ainv @ Xb.T @ y
         resid = y - Xb @ coefs
@@ -137,24 +142,31 @@ class PRISM(Teleprompter):
     Optimizes knowledge via Ridge regression credit assignment,
     uncertainty-based subset selection, and LLM generation."""
     def __init__(self, *, metric, reward_fn=None, max_steps=100,
-                 gen_every=10, gen_lm=None, initial_knowledge=None,
+                 gen_every=10, gen_on_fail=False, gen_lm=None,
+                 initial_knowledge=None,
                  num_threads=1, temp=1.0, **kw):
         super().__init__()
         self.metric = metric
         self.reward_fn = reward_fn
         self.max_steps = max_steps
         self.gen_every = gen_every
+        self.gen_on_fail = gen_on_fail
         self.gen_lm = gen_lm
         self.initial_knowledge = initial_knowledge or []
         self.num_threads = num_threads
         self.temp = temp
+        self.pool = []
+        self.last_selected = []
+        self.gen_count = 0
 
     def compile(self, student, *, trainset, seed=0):
         random.seed(seed); np.random.seed(seed)
         ps = [_Piece(s) for s in self.initial_knowledge]
+        self.pool = ps
         cr = _CreditModel()
+        self._credit_model = cr
         gn = dspy.Predict(_GenKnowledge) if self.gen_every else None
-        cands, last_ro, recent = [], Rollout(), []
+        cands, last_fail, recent = [], Rollout(), []
         gen_futs, gp = [], ThreadPoolExecutor(self.num_threads)
         for i in range(self.max_steps):
             self._collect_gen(ps, gen_futs)
@@ -164,13 +176,20 @@ class PRISM(Teleprompter):
                                    n_eval)
             for sc, k, sel, ex, pred in res:
                 if sc is None: continue
+                self.last_selected = sel
                 self._upd(ps, sel, sc, cr)
                 recent.append(sc)
-                last_ro = _fmt_rollout(ex, pred, sc)
+                if sc < 0:
+                    last_fail = _fmt_rollout(ex, pred, sc)
+                    if self.gen_on_fail and gn:
+                        self.gen_count += 1
+                        gen_futs.append(gp.submit(
+                            self._gen_async, ps, gn, last_fail))
                 cands.append({"score": sc, "knowledge": k})
-            if gn and (i+1)%self.gen_every==0:
+            if gn and not self.gen_on_fail and (i+1)%self.gen_every==0:
+                self.gen_count += 1
                 gen_futs.append(gp.submit(
-                    self._gen_async, ps, gn, last_ro))
+                    self._gen_async, ps, gn, last_fail))
             scs = [r[0] for r in res if r[0] is not None]
             avg = np.mean(scs) if scs else 0
             ra = np.mean(recent[-50:]) if recent else 0
