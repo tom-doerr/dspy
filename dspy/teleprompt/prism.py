@@ -41,11 +41,11 @@ class Rollout(BaseModel):
 
 class _GenKnowledge(dspy.Signature):
     """Generate one novel knowledge piece to maximize reward (higher β = better).
-    Generate a SHORT, CONCISE piece — no repeats."""
+    No repeats of existing pool items."""
     pool: KnowledgePool = dspy.InputField(desc="Pieces with β/SE/n")
     rollout: Rollout = dspy.InputField(desc="Recent example with score")
     reasoning: str = dspy.OutputField(desc="What patterns help/hurt? What's missing?")
-    new_knowledge: str = dspy.OutputField(desc="One short novel knowledge string")
+    new_knowledge: str = dspy.OutputField(desc="One novel knowledge string")
 
 
 class _Piece:
