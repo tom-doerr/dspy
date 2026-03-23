@@ -40,12 +40,12 @@ class Rollout(BaseModel):
     score: float = 0.0
 
 class _GenKnowledge(dspy.Signature):
-    """Generate novel knowledge to maximize reward (higher β = better).
-    Generate SHORT, CONCISE, DIFFERENT pieces — no repeats."""
+    """Generate one novel knowledge piece to maximize reward (higher β = better).
+    Generate a SHORT, CONCISE piece — no repeats."""
     pool: KnowledgePool = dspy.InputField(desc="Pieces with β/SE/n")
     rollout: Rollout = dspy.InputField(desc="Recent example with score")
     reasoning: str = dspy.OutputField(desc="What patterns help/hurt? What's missing?")
-    new_knowledge: list[str] = dspy.OutputField(desc="3 short novel strings")
+    new_knowledge: str = dspy.OutputField(desc="One short novel knowledge string")
 
 
 class _Piece:
@@ -59,6 +59,7 @@ class _CreditModel:
     def __init__(self, **kw):
         self.X, self.y = [], []
         self.log_alpha = 0.0
+        self.intercept = 0.0
 
     def add(self, sv, reward):
         self.X.append(sv); self.y.append(reward)
@@ -99,6 +100,7 @@ class _CreditModel:
             if i < n:
                 p.coef = float(coefs[i])
                 p.stderr = float(np.sqrt(max(0, cov[i,i])))
+        self.intercept = float(coefs[-1])
 
 
 def _sample(pieces, temp=1.0):
@@ -257,6 +259,8 @@ class PRISM(Teleprompter):
             else:
                 r = gen(**kw)
             out = r.new_knowledge
+            if isinstance(out, str):
+                return [out] if out.strip() else []
             return out if isinstance(out, list) else []
         except Exception as e:
             logger.warning(f"Gen: {e}"); return []
