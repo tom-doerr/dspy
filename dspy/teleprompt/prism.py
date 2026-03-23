@@ -177,7 +177,7 @@ class PRISM(Teleprompter):
             n_gen = sum(1 for f in gen_futs if not f.done())
             n_eval = max(1, self.num_threads - n_gen)
             res = self._step_batch(student, trainset, ps,
-                                   n_eval)
+                                   n_eval, executor=gp)
             for sc, k, sel, ex, pred in res:
                 if sc is None: continue
                 self.last_selected = sel
@@ -185,8 +185,7 @@ class PRISM(Teleprompter):
                 recent.append(sc)
                 if sc < 0:
                     last_fail = _fmt_rollout(ex, pred, sc)
-                    pending = sum(1 for f in gen_futs if not f.done())
-                    if self.gen_on_fail and gn and pending == 0:
+                    if self.gen_on_fail and gn:
                         self.gen_count += 1
                         gen_futs.append(gp.submit(
                             self._gen_async, ps, gn, last_fail))
@@ -205,7 +204,7 @@ class PRISM(Teleprompter):
         gp.shutdown(wait=True)
         return self._finalize(student, cands, ps)
 
-    def _step_batch(self, student, trainset, ps, n):
+    def _step_batch(self, student, trainset, ps, n, executor=None):
         jobs = []
         for _ in range(n):
             ex = random.choice(trainset)
@@ -217,13 +216,17 @@ class PRISM(Teleprompter):
             sc, pred = self._eval(student, ex, k)
             return [(sc, k, sel, ex, pred)]
         out = []
-        with ThreadPoolExecutor(n) as tp:
+        tp = executor or ThreadPoolExecutor(n)
+        try:
             fs = {tp.submit(self._eval, student, ex, k):
                   (sel, k, ex) for ex, sel, k in jobs}
             for f in as_completed(fs):
                 sel, k, ex = fs[f]
                 sc, pred = f.result()
                 out.append((sc, k, sel, ex, pred))
+        finally:
+            if not executor:
+                tp.shutdown(wait=False)
         return out
 
     def _eval(self, student, ex, knowledge):
