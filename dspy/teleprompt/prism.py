@@ -160,6 +160,8 @@ class PRISM(Teleprompter):
         self.pool = []
         self.last_selected = []
         self.gen_count = 0
+        self.gen_duplicates = 0
+        self.gen_failures = 0
 
     def compile(self, student, *, trainset, seed=0):
         random.seed(seed); np.random.seed(seed)
@@ -271,10 +273,16 @@ class PRISM(Teleprompter):
         existing = {p.content for p in ps}
         for f in done:
             futs.remove(f)
-            for s in (f.result() or []):
+            result = f.result() or []
+            if not result:
+                self.gen_failures += 1
+            for s in result:
                 s = s.strip() if isinstance(s, str) \
                     else str(s).strip()
-                if s and s not in existing:
+                if not s: continue
+                if s in existing:
+                    self.gen_duplicates += 1
+                else:
                     ps.append(_Piece(s))
                     existing.add(s)
 
