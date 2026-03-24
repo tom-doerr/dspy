@@ -185,7 +185,8 @@ class PRISM(Teleprompter):
                 recent.append(sc)
                 if sc < 0:
                     last_fail = _fmt_rollout(ex, pred, sc)
-                    if self.gen_on_fail and gn:
+                    pending = sum(1 for f in gen_futs if not f.done())
+                    if self.gen_on_fail and gn and pending < self.num_threads - 1:
                         self.gen_count += 1
                         gen_futs.append(gp.submit(
                             self._gen_async, ps, gn, last_fail))
