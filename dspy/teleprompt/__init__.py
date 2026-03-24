@@ -9,7 +9,7 @@ from dspy.teleprompt.infer_rules import InferRules
 from dspy.teleprompt.knn_fewshot import KNNFewShot
 from dspy.teleprompt.mipro_optimizer_v2 import MIPROv2
 from dspy.teleprompt.random_search import BootstrapFewShotWithRandomSearch
-from dspy.teleprompt.prism import PRISM
+from dspy.teleprompt.prism import PRISM, PrismState
 from dspy.teleprompt.simba import SIMBA
 from dspy.teleprompt.simbat import SIMBAT
 from dspy.teleprompt.teleprompt import Teleprompter

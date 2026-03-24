@@ -11,6 +11,7 @@ import math
 import random
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from typing import Any, Callable, List
 
 import numpy as np
@@ -20,6 +21,18 @@ from dspy.teleprompt.teleprompt import Teleprompter
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PrismState:
+    """Mutable runtime state for a PRISM optimization run."""
+    pool: list = field(default_factory=list)
+    last_selected: list = field(default_factory=list)
+    gen_count: int = 0
+    gen_duplicates: int = 0
+    gen_failures: int = 0
+    last_eval_time: float = 0.0
+    last_gen_time: float = 0.0
 
 
 class KnowledgePiece(BaseModel):
@@ -148,6 +161,10 @@ class PRISM(Teleprompter):
                  initial_knowledge=None,
                  num_threads=1, temp=1.0, **kw):
         super().__init__()
+        assert num_threads >= 1, f"num_threads must be >= 1, got {num_threads}"
+        assert max_steps >= 1, f"max_steps must be >= 1, got {max_steps}"
+        assert gen_every >= 0, f"gen_every must be >= 0, got {gen_every}"
+        assert temp >= 0, f"temp must be >= 0, got {temp}"
         self.metric = metric
         self.reward_fn = reward_fn
         self.max_steps = max_steps
@@ -157,18 +174,12 @@ class PRISM(Teleprompter):
         self.initial_knowledge = initial_knowledge or []
         self.num_threads = num_threads
         self.temp = temp
-        self.pool = []
-        self.last_selected = []
-        self.gen_count = 0
-        self.gen_duplicates = 0
-        self.gen_failures = 0
-        self.last_eval_time = 0.0
-        self.last_gen_time = 0.0
+        self.state = PrismState()
 
     def compile(self, student, *, trainset, seed=0):
         random.seed(seed); np.random.seed(seed)
         ps = [_Piece(s) for s in self.initial_knowledge]
-        self.pool = ps
+        self.state = PrismState(pool=ps)
         cr = _CreditModel()
         self._credit_model = cr
         gn = dspy.Predict(_GenKnowledge) if self.gen_every else None
@@ -182,19 +193,19 @@ class PRISM(Teleprompter):
                                    n_eval, executor=gp)
             for sc, k, sel, ex, pred in res:
                 if sc is None: continue
-                self.last_selected = sel
+                self.state.last_selected = sel
                 self._upd(ps, sel, sc, cr)
                 recent.append(sc)
                 if sc < 0:
                     last_fail = _fmt_rollout(ex, pred, sc)
                     pending = sum(1 for f in gen_futs if not f.done())
                     if self.gen_on_fail and gn and pending < max(1, self.num_threads - 1):
-                        self.gen_count += 1
+                        self.state.gen_count += 1
                         gen_futs.append(gp.submit(
                             self._gen_async, ps, gn, last_fail))
                 cands.append({"score": sc, "knowledge": k})
             if gn and not self.gen_on_fail and (i+1)%self.gen_every==0:
-                self.gen_count += 1
+                self.state.gen_count += 1
                 gen_futs.append(gp.submit(
                     self._gen_async, ps, gn, last_fail))
             scs = [r[0] for r in res if r[0] is not None]
@@ -245,7 +256,7 @@ class PRISM(Teleprompter):
             else:
                 sc = float(s) if isinstance(s, (int, float)) \
                     else float(getattr(s, 'score', 0))
-            self.last_eval_time = _time.time() - t0
+            self.state.last_eval_time = _time.time() - t0
             return sc, pred
         except Exception as e:
             logger.warning(f"Eval: {e}"); return None, None
@@ -272,12 +283,12 @@ class PRISM(Teleprompter):
             else:
                 r = gen(**kw)
             out = r.new_knowledge
-            self.last_gen_time = _time.time() - t0
+            self.state.last_gen_time = _time.time() - t0
             if isinstance(out, str):
                 return [out] if out.strip() else []
             return out if isinstance(out, list) else []
         except Exception as e:
-            self.last_gen_time = _time.time() - t0
+            self.state.last_gen_time = _time.time() - t0
             logger.warning(f"Gen: {e}"); return []
 
     def _collect_gen(self, ps, futs, wait=False):
@@ -288,13 +299,13 @@ class PRISM(Teleprompter):
             futs.remove(f)
             result = f.result() or []
             if not result:
-                self.gen_failures += 1
+                self.state.gen_failures += 1
             for s in result:
                 s = s.strip() if isinstance(s, str) \
                     else str(s).strip()
                 if not s: continue
                 if s in existing:
-                    self.gen_duplicates += 1
+                    self.state.gen_duplicates += 1
                 else:
                     ps.append(_Piece(s))
                     existing.add(s)

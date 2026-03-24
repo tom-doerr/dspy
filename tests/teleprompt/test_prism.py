@@ -8,7 +8,7 @@ import dspy
 from dspy import Example
 from dspy.predict import Predict
 from dspy.teleprompt.prism import (
-    PRISM, Rollout, _CreditModel, _Piece,
+    PRISM, PrismState, Rollout, _CreditModel, _Piece,
     _build, _fmt_rollout, _sample, _set_instructions,
 )
 from dspy.utils.dummies import DummyLM
@@ -74,7 +74,7 @@ def test_gen_on_fail_submits_with_one_thread():
     )
     opt._gen_async = MagicMock(return_value=["new"])
     opt.compile(SimpleModule(), trainset=_trainset(), seed=42)
-    assert opt.gen_count > 0
+    assert opt.state.gen_count > 0
 
 
 # 2. gen_on_fail with num_threads=8
@@ -92,7 +92,7 @@ def test_gen_on_fail_submits_with_eight_threads():
     )
     opt._gen_async = MagicMock(return_value=["new"])
     opt.compile(SimpleModule(), trainset=_trainset(), seed=42)
-    assert opt.gen_count > 0
+    assert opt.state.gen_count > 0
 
 
 # 3. gen count cap prevents queue buildup
@@ -183,7 +183,7 @@ def test_collect_gen_failures():
     ps = [_Piece("existing")]
     futs = [_done_future([]), _done_future(None)]
     opt._collect_gen(ps, futs)
-    assert opt.gen_failures == 2
+    assert opt.state.gen_failures == 2
     assert len(ps) == 1
 
 
@@ -193,7 +193,7 @@ def test_collect_gen_duplicates():
     ps = [_Piece("existing piece")]
     futs = [_done_future(["existing piece"])]
     opt._collect_gen(ps, futs)
-    assert opt.gen_duplicates == 1
+    assert opt.state.gen_duplicates == 1
     assert len(ps) == 1
 
 
@@ -205,7 +205,7 @@ def test_collect_gen_new_piece():
     opt._collect_gen(ps, futs)
     assert len(ps) == 2
     assert ps[1].content == "brand new"
-    assert opt.gen_failures == 0
+    assert opt.state.gen_failures == 0
 
 
 def test_collect_gen_mixed():
@@ -214,7 +214,7 @@ def test_collect_gen_mixed():
     ps = [_Piece("old")]
     futs = [_done_future(["old", "new"])]
     opt._collect_gen(ps, futs)
-    assert opt.gen_duplicates == 1
+    assert opt.state.gen_duplicates == 1
     assert len(ps) == 2
     assert ps[1].content == "new"
 
@@ -226,7 +226,7 @@ def test_collect_gen_whitespace_skipped():
     futs = [_done_future(["  ", "\n", ""])]
     opt._collect_gen(ps, futs)
     assert len(ps) == 0
-    assert opt.gen_failures == 0
+    assert opt.state.gen_failures == 0
 
 
 def test_collect_gen_removes_futures():
@@ -276,3 +276,79 @@ def test_fmt_rollout():
     assert r.input == {"input": "q"}
     assert r.expected == {"output": "a"}
     assert r.output == {"output": "pred_a"}
+
+
+# 8. Validation assertions
+def test_init_rejects_bad_num_threads():
+    with pytest.raises(AssertionError, match="num_threads"):
+        PRISM(metric=always_one, num_threads=0)
+
+
+def test_init_rejects_bad_max_steps():
+    with pytest.raises(AssertionError, match="max_steps"):
+        PRISM(metric=always_one, max_steps=0)
+
+
+def test_init_rejects_bad_gen_every():
+    with pytest.raises(AssertionError, match="gen_every"):
+        PRISM(metric=always_one, gen_every=-1)
+
+
+def test_init_rejects_bad_temp():
+    with pytest.raises(AssertionError, match="temp"):
+        PRISM(metric=always_one, temp=-0.5)
+
+
+# 9. PrismState dataclass
+def test_prism_state_defaults():
+    s = PrismState()
+    assert s.pool == []
+    assert s.last_selected == []
+    assert s.gen_count == 0
+    assert s.gen_duplicates == 0
+    assert s.gen_failures == 0
+    assert s.last_eval_time == 0.0
+    assert s.last_gen_time == 0.0
+
+
+def test_prism_state_on_optimizer():
+    opt = PRISM(metric=always_one, max_steps=1)
+    assert isinstance(opt.state, PrismState)
+    assert opt.state.pool == []
+
+
+# 10. End-to-end compile test
+def test_compile_end_to_end():
+    """PRISM.compile() runs, updates state, and sets
+    _prism_knowledge on the result."""
+    lm = DummyLM([{"answer": "Paris"}] * 500)
+    dspy.settings.configure(lm=lm)
+
+    class QA(dspy.Signature):
+        """Answer the question."""
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    student = dspy.Predict(QA)
+    trainset = [
+        Example(question=f"Q{i}?",
+                answer=f"A{i}").with_inputs("question")
+        for i in range(6)
+    ]
+    init_knowledge = ["Answer with the capital city name"]
+    initial_pool_size = len(init_knowledge)
+
+    opt = PRISM(
+        metric=score_match,
+        max_steps=5,
+        gen_every=2,
+        num_threads=1,
+        initial_knowledge=init_knowledge,
+    )
+    opt._gen_async = MagicMock(return_value=["New piece"])
+    result = opt.compile(student, trainset=trainset)
+
+    assert opt.state.gen_count > 0
+    assert len(opt.state.pool) > initial_pool_size
+    assert hasattr(result, "_prism_knowledge")
+    assert len(result._prism_knowledge) > 0
