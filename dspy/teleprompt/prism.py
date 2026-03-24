@@ -50,7 +50,7 @@ class _GenKnowledge(dspy.Signature):
     Pieces ordered worst-to-best by β. Negative β hurts performance.
     No repeats or paraphrases of existing pool items."""
     pool: KnowledgePool = dspy.InputField(desc="All pieces ordered by β (worst→best)")
-    observation: str = dspy.InputField(desc="Recent example: inputs, prediction, label, score")
+    observation = dspy.InputField(desc="Recent example: inputs, prediction, label, score")
     reasoning: str = dspy.OutputField(desc="What patterns help/hurt? What's missing?")
     new_knowledge: list[str] = dspy.OutputField(desc="Novel knowledge rules, max 15 words each")
 
@@ -134,16 +134,22 @@ def _build(pieces, idxs):
 
 
 def _fmt_observation(ex, pred, sc):
-    inp = {k: v if isinstance(v, (str, bool, int, float))
-           else f"[{type(v).__name__}]"
-           for k, v in dict(ex.inputs()).items()}
+    inputs = dict(ex.inputs())
+    images = [v for v in inputs.values()
+              if not isinstance(v, (str, bool, int, float))]
+    text_inp = {k: v if isinstance(v, (str, bool, int, float))
+                else f"[{type(v).__name__}]"
+                for k, v in inputs.items()}
     lbl = {k: getattr(ex, k, '')
            for k in (ex.labels() if hasattr(ex,'labels') else [])}
     out = {k: getattr(pred, k, '')
            for k in (pred.keys() if hasattr(pred,'keys') else [])
            if not k.startswith('_') and k != 'logprobs'}
-    return (f"Input: {inp}\nPredicted: {out}\n"
+    text = (f"Input: {text_inp}\nPredicted: {out}\n"
             f"Expected: {lbl}\nScore: {sc:.3f}")
+    if images:
+        return [text] + images
+    return text
 
 
 def _set_instructions(prog, knowledge):
