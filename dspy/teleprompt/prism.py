@@ -31,6 +31,7 @@ class PrismState:
     gen_count: int = 0
     gen_duplicates: int = 0
     gen_failures: int = 0
+    gen_too_long: int = 0
     last_eval_time: float = 0.0
     last_gen_time: float = 0.0
 
@@ -53,13 +54,13 @@ class Rollout(BaseModel):
     score: float = 0.0
 
 class _GenKnowledge(dspy.Signature):
-    """Generate one short, concise knowledge piece to maximize reward.
-    Pieces are ordered worst-to-best by β. Negative β pieces hurt performance.
-    No repeats of existing pool items."""
+    """Generate novel knowledge rules (max 15 words each) to maximize reward.
+    Pieces ordered worst-to-best by β. Negative β hurts performance.
+    No repeats or paraphrases of existing pool items."""
     pool: KnowledgePool = dspy.InputField(desc="All pieces ordered by β (worst→best)")
     rollout: Rollout = dspy.InputField(desc="Recent example with score")
     reasoning: str = dspy.OutputField(desc="What patterns help/hurt? What's missing?")
-    new_knowledge: str = dspy.OutputField(desc="One short, concise knowledge string")
+    new_knowledge: list[str] = dspy.OutputField(desc="Novel knowledge rules, max 15 words each")
 
 
 class _Piece:
@@ -169,7 +170,8 @@ class PRISM(Teleprompter):
     def __init__(self, *, metric, reward_fn=None, max_steps=100,
                  gen_every=10, gen_on_mistake=False, gen_lm=None,
                  initial_knowledge=None,
-                 num_threads=1, temp=1.0, **kw):
+                 num_threads=1, temp=1.0,
+                 max_piece_words=15, **kw):
         super().__init__()
         assert num_threads >= 1, f"num_threads must be >= 1, got {num_threads}"
         assert max_steps >= 1, f"max_steps must be >= 1, got {max_steps}"
@@ -184,6 +186,7 @@ class PRISM(Teleprompter):
         self.initial_knowledge = initial_knowledge or []
         self.num_threads = num_threads
         self.temp = temp
+        self.max_piece_words = max_piece_words
         self.state = PrismState()
 
     def compile(self, student, *, trainset, seed=0):
@@ -194,7 +197,13 @@ class PRISM(Teleprompter):
         self._credit_model = cr
         if hasattr(self.metric, 'set_prism_refs'):
             self.metric.set_prism_refs(self.state, cr)
-        gn = dspy.Predict(_GenKnowledge) if self.gen_every else None
+        gn = None
+        if self.gen_every or self.gen_on_mistake:
+            w = self.max_piece_words
+            sig = _GenKnowledge.with_updated_fields(
+                "new_knowledge",
+                desc=f"Novel knowledge rules, max {w} words each")
+            gn = dspy.Predict(sig)
         cands, last_fail, recent = [], Rollout(), []
         gen_futs, gp = [], ThreadPoolExecutor(self.num_threads)
         for i in range(self.max_steps):
@@ -317,6 +326,9 @@ class PRISM(Teleprompter):
                 s = s.strip() if isinstance(s, str) \
                     else str(s).strip()
                 if not s: continue
+                if len(s.split()) > self.max_piece_words:
+                    self.state.gen_too_long += 1
+                    continue
                 if s in existing:
                     self.state.gen_duplicates += 1
                 else:
