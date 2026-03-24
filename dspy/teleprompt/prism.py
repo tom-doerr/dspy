@@ -167,7 +167,7 @@ class PRISM(Teleprompter):
     Optimizes knowledge via Ridge regression credit assignment,
     uncertainty-based subset selection, and LLM generation."""
     def __init__(self, *, metric, reward_fn=None, max_steps=100,
-                 gen_every=10, gen_on_fail=False, gen_lm=None,
+                 gen_every=10, gen_on_mistake=False, gen_lm=None,
                  initial_knowledge=None,
                  num_threads=1, temp=1.0, **kw):
         super().__init__()
@@ -179,7 +179,7 @@ class PRISM(Teleprompter):
         self.reward_fn = reward_fn
         self.max_steps = max_steps
         self.gen_every = gen_every
-        self.gen_on_fail = gen_on_fail
+        self.gen_on_mistake = gen_on_mistake
         self.gen_lm = gen_lm
         self.initial_knowledge = initial_knowledge or []
         self.num_threads = num_threads
@@ -211,12 +211,12 @@ class PRISM(Teleprompter):
                 if sc < 0:
                     last_fail = _fmt_rollout(ex, pred, sc)
                     pending = sum(1 for f in gen_futs if not f.done())
-                    if self.gen_on_fail and gn and pending < max(1, self.num_threads - 1):
+                    if self.gen_on_mistake and gn and pending < max(1, self.num_threads - 1):
                         self.state.gen_count += 1
                         gen_futs.append(gp.submit(
                             self._gen_async, ps, gn, last_fail))
                 cands.append({"score": sc, "knowledge": k})
-            if gn and not self.gen_on_fail and (i+1)%self.gen_every==0:
+            if gn and not self.gen_on_mistake and (i+1)%self.gen_every==0:
                 self.state.gen_count += 1
                 gen_futs.append(gp.submit(
                     self._gen_async, ps, gn, last_fail))

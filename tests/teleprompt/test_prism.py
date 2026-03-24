@@ -34,7 +34,7 @@ def score_match(example, prediction, trace=None):
 
 
 def neg_on_wrong(example, prediction):
-    """reward_fn: -1 on mismatch (triggers gen_on_fail)."""
+    """reward_fn: -1 on mismatch (triggers gen_on_mistake)."""
     if prediction is None:
         return -1.0
     return 1.0 if example.output == prediction.output else -1.0
@@ -57,19 +57,19 @@ def _pending_future():
     return Future()
 
 
-# 1. gen_on_fail with num_threads=1
-def test_gen_on_fail_cap_is_one_not_zero():
+# 1. gen_on_mistake with num_threads=1
+def test_gen_on_mistake_cap_is_one_not_zero():
     """max(1, num_threads-1) with num_threads=1 must be 1."""
     assert max(1, 1 - 1) == 1
 
 
-def test_gen_on_fail_submits_with_one_thread():
-    """num_threads=1 + gen_on_fail: gens fire on failure."""
+def test_gen_on_mistake_submits_with_one_thread():
+    """num_threads=1 + gen_on_mistake: gens fire on failure."""
     lm = DummyLM([{"output": "wrong"}] * 100)
     dspy.settings.configure(lm=lm)
     opt = PRISM(
         metric=score_match, reward_fn=neg_on_wrong,
-        max_steps=3, gen_on_fail=True, num_threads=1,
+        max_steps=3, gen_on_mistake=True, num_threads=1,
         initial_knowledge=["test piece"],
     )
     opt._gen_async = MagicMock(return_value=["new"])
@@ -77,17 +77,17 @@ def test_gen_on_fail_submits_with_one_thread():
     assert opt.state.gen_count > 0
 
 
-# 2. gen_on_fail with num_threads=8
-def test_gen_on_fail_cap_is_seven():
+# 2. gen_on_mistake with num_threads=8
+def test_gen_on_mistake_cap_is_seven():
     assert max(1, 8 - 1) == 7
 
 
-def test_gen_on_fail_submits_with_eight_threads():
+def test_gen_on_mistake_submits_with_eight_threads():
     lm = DummyLM([{"output": "wrong"}] * 200)
     dspy.settings.configure(lm=lm)
     opt = PRISM(
         metric=score_match, reward_fn=neg_on_wrong,
-        max_steps=3, gen_on_fail=True, num_threads=8,
+        max_steps=3, gen_on_mistake=True, num_threads=8,
         initial_knowledge=["test piece"],
     )
     opt._gen_async = MagicMock(return_value=["new"])
