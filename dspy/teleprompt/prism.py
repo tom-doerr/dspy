@@ -162,6 +162,8 @@ class PRISM(Teleprompter):
         self.gen_count = 0
         self.gen_duplicates = 0
         self.gen_failures = 0
+        self.last_eval_time = 0.0
+        self.last_gen_time = 0.0
 
     def compile(self, student, *, trainset, seed=0):
         random.seed(seed); np.random.seed(seed)
@@ -231,7 +233,8 @@ class PRISM(Teleprompter):
         return out
 
     def _eval(self, student, ex, knowledge):
-        import copy
+        import copy, time as _time
+        t0 = _time.time()
         try:
             prog = copy.deepcopy(student)
             _set_instructions(prog, knowledge)
@@ -242,6 +245,7 @@ class PRISM(Teleprompter):
             else:
                 sc = float(s) if isinstance(s, (int, float)) \
                     else float(getattr(s, 'score', 0))
+            self.last_eval_time = _time.time() - t0
             return sc, pred
         except Exception as e:
             logger.warning(f"Eval: {e}"); return None, None
@@ -254,6 +258,8 @@ class PRISM(Teleprompter):
 
     def _gen_async(self, ps, gen, rollout):
         """Background thread: return new knowledge strings."""
+        import time as _time
+        t0 = _time.time()
         src = [p for p in ps if p.coef > 0 or p.n_sel == 0]
         pool = KnowledgePool(items=[
             KnowledgePiece(content=p.content, beta=p.coef,
@@ -266,10 +272,12 @@ class PRISM(Teleprompter):
             else:
                 r = gen(**kw)
             out = r.new_knowledge
+            self.last_gen_time = _time.time() - t0
             if isinstance(out, str):
                 return [out] if out.strip() else []
             return out if isinstance(out, list) else []
         except Exception as e:
+            self.last_gen_time = _time.time() - t0
             logger.warning(f"Gen: {e}"); return []
 
     def _collect_gen(self, ps, futs, wait=False):
