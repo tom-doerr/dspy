@@ -182,6 +182,8 @@ class PRISM(Teleprompter):
         self.state = PrismState(pool=ps)
         cr = _CreditModel()
         self._credit_model = cr
+        if hasattr(self.metric, 'set_prism_refs'):
+            self.metric.set_prism_refs(self.state, cr)
         gn = dspy.Predict(_GenKnowledge) if self.gen_every else None
         cands, last_fail, recent = [], Rollout(), []
         gen_futs, gp = [], ThreadPoolExecutor(self.num_threads)
