@@ -143,9 +143,10 @@ def test_shared_executor():
     seen = []
     orig = opt._step_batch
 
-    def spy(s, ts, ps, n, executor=None):
+    def spy(s, ts, ps, n, deck_idx=0, executor=None):
         seen.append(executor)
-        return orig(s, ts, ps, n, executor=executor)
+        return orig(s, ts, ps, n, deck_idx=deck_idx,
+                    executor=executor)
 
     opt._step_batch = spy
     opt._gen_async = MagicMock(return_value=["x"])

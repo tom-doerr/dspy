@@ -206,12 +206,16 @@ class PRISM(Teleprompter):
             gn = dspy.Predict(sig)
         cands, last_fail, recent = [], "", []
         gen_futs, gp = [], ThreadPoolExecutor(self.num_threads)
+        deck = list(trainset)
+        random.shuffle(deck)
+        deck_idx = 0
         for i in range(self.max_steps):
             self._collect_gen(ps, gen_futs)
             n_gen = sum(1 for f in gen_futs if not f.done())
             n_eval = max(1, self.num_threads - n_gen)
-            res = self._step_batch(student, trainset, ps,
-                                   n_eval, executor=gp)
+            res, deck_idx = self._step_batch(
+                student, deck, ps, n_eval,
+                deck_idx=deck_idx, executor=gp)
             for sc, k, sel, ex, pred in res:
                 if sc is None: continue
                 self.state.last_selected = sel
@@ -239,10 +243,15 @@ class PRISM(Teleprompter):
         gp.shutdown(wait=True)
         return self._finalize(student, cands, ps)
 
-    def _step_batch(self, student, trainset, ps, n, executor=None):
+    def _step_batch(self, student, deck, ps, n,
+                     deck_idx=0, executor=None):
         jobs = []
         for _ in range(n):
-            ex = random.choice(trainset)
+            if deck_idx >= len(deck):
+                random.shuffle(deck)
+                deck_idx = 0
+            ex = deck[deck_idx]
+            deck_idx += 1
             cov = self._credit_model.cov if hasattr(self, '_credit_model') else None
             sel = _sample(ps, self.temp, cov) if ps else []
             k = _build(ps, sel) if sel else ""
@@ -250,7 +259,7 @@ class PRISM(Teleprompter):
         if n <= 1:
             ex, sel, k = jobs[0]
             sc, pred = self._eval(student, ex, k)
-            return [(sc, k, sel, ex, pred)]
+            return [(sc, k, sel, ex, pred)], deck_idx
         out = []
         tp = executor or ThreadPoolExecutor(n)
         try:
@@ -263,7 +272,7 @@ class PRISM(Teleprompter):
         finally:
             if not executor:
                 tp.shutdown(wait=False)
-        return out
+        return out, deck_idx
 
     def _eval(self, student, ex, knowledge):
         import copy, time as _time
