@@ -45,20 +45,12 @@ class KnowledgePool(BaseModel):
     items: list[KnowledgePiece] = Field(default_factory=list)
     def __str__(self): return "\n".join(str(p) for p in self.items)
 
-class Rollout(BaseModel):
-    """A single evaluation rollout with inputs, labels, and outputs."""
-    model_config = {"arbitrary_types_allowed": True}
-    input: dict = Field(default_factory=dict)
-    output: dict = Field(default_factory=dict)
-    expected: dict = Field(default_factory=dict)
-    score: float = 0.0
-
 class _GenKnowledge(dspy.Signature):
     """Generate novel knowledge rules (max 15 words each) to maximize reward.
     Pieces ordered worst-to-best by β. Negative β hurts performance.
     No repeats or paraphrases of existing pool items."""
     pool: KnowledgePool = dspy.InputField(desc="All pieces ordered by β (worst→best)")
-    rollout: Rollout = dspy.InputField(desc="Recent example with score")
+    observation: str = dspy.InputField(desc="Recent example: inputs, prediction, label, score")
     reasoning: str = dspy.OutputField(desc="What patterns help/hurt? What's missing?")
     new_knowledge: list[str] = dspy.OutputField(desc="Novel knowledge rules, max 15 words each")
 
@@ -141,15 +133,17 @@ def _build(pieces, idxs):
     return "\n".join(pieces[i].content for i in idxs)
 
 
-def _fmt_rollout(ex, pred, sc):
-    inp = dict(ex.inputs())
+def _fmt_observation(ex, pred, sc):
+    inp = {k: v if isinstance(v, (str, bool, int, float))
+           else f"[{type(v).__name__}]"
+           for k, v in dict(ex.inputs()).items()}
     lbl = {k: getattr(ex, k, '')
            for k in (ex.labels() if hasattr(ex,'labels') else [])}
     out = {k: getattr(pred, k, '')
            for k in (pred.keys() if hasattr(pred,'keys') else [])
-           if not k.startswith('_')}
-    return Rollout(score=sc, input=inp,
-                   expected=lbl, output=out)
+           if not k.startswith('_') and k != 'logprobs'}
+    return (f"Input: {inp}\nPredicted: {out}\n"
+            f"Expected: {lbl}\nScore: {sc:.3f}")
 
 
 def _set_instructions(prog, knowledge):
@@ -204,7 +198,7 @@ class PRISM(Teleprompter):
                 "new_knowledge",
                 desc=f"Novel knowledge rules, max {w} words each")
             gn = dspy.Predict(sig)
-        cands, last_fail, recent = [], Rollout(), []
+        cands, last_fail, recent = [], "", []
         gen_futs, gp = [], ThreadPoolExecutor(self.num_threads)
         for i in range(self.max_steps):
             self._collect_gen(ps, gen_futs)
@@ -218,7 +212,7 @@ class PRISM(Teleprompter):
                 self._upd(ps, sel, sc, cr)
                 recent.append(sc)
                 if sc < 0:
-                    last_fail = _fmt_rollout(ex, pred, sc)
+                    last_fail = _fmt_observation(ex, pred, sc)
                     pending = sum(1 for f in gen_futs if not f.done())
                     if self.gen_on_mistake and gn and pending < max(1, self.num_threads - 1):
                         self.state.gen_count += 1
@@ -289,7 +283,7 @@ class PRISM(Teleprompter):
         sv = [1.0 if i in set(sel) else 0.0 for i in range(len(ps))]
         cr.add(sv, sc); cr.update(ps)
 
-    def _gen_async(self, ps, gen, rollout):
+    def _gen_async(self, ps, gen, observation):
         """Background thread: return new knowledge strings."""
         import time as _time
         t0 = _time.time()
@@ -298,7 +292,7 @@ class PRISM(Teleprompter):
             KnowledgePiece(content=p.content, beta=p.coef,
                 se=p.stderr, n=p.n_sel) for p in src])
         try:
-            kw = {"pool": pool, "rollout": rollout}
+            kw = {"pool": pool, "observation": observation}
             if self.gen_lm:
                 with dspy.context(lm=self.gen_lm):
                     r = gen(**kw)

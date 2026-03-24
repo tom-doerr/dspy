@@ -8,8 +8,8 @@ import dspy
 from dspy import Example
 from dspy.predict import Predict
 from dspy.teleprompt.prism import (
-    PRISM, PrismState, Rollout, _CreditModel, _Piece,
-    _build, _fmt_rollout, _sample, _set_instructions,
+    PRISM, PrismState, _CreditModel, _Piece,
+    _build, _fmt_observation, _sample, _set_instructions,
 )
 from dspy.utils.dummies import DummyLM
 
@@ -239,43 +239,17 @@ def test_collect_gen_removes_futures():
     assert len(ps) == 2
 
 
-# 7. Rollout field order: input, output, expected, score
-def test_rollout_field_order():
-    """Fields must be input, output, expected, score."""
-    fields = list(Rollout.model_fields.keys())
-    assert fields == ["input", "output", "expected", "score"]
-
-
-def test_rollout_values():
-    r = Rollout(
-        input={"q": "hi"}, output={"a": "world"},
-        expected={"a": "world"}, score=1.0,
-    )
-    assert r.input == {"q": "hi"}
-    assert r.output == {"a": "world"}
-    assert r.expected == {"a": "world"}
-    assert r.score == 1.0
-
-
-def test_rollout_defaults():
-    r = Rollout()
-    assert r.input == {}
-    assert r.output == {}
-    assert r.expected == {}
-    assert r.score == 0.0
-
-
-def test_fmt_rollout():
-    """_fmt_rollout populates input/output/expected/score."""
+# 7. Observation formatting
+def test_fmt_observation():
+    """_fmt_observation returns string with inputs/predicted/expected/score."""
     ex = Example(input="q", output="a").with_inputs("input")
     pred = MagicMock()
     pred.keys = MagicMock(return_value=["output"])
     pred.output = "pred_a"
-    r = _fmt_rollout(ex, pred, 0.75)
-    assert r.score == 0.75
-    assert r.input == {"input": "q"}
-    assert r.expected == {"output": "a"}
-    assert r.output == {"output": "pred_a"}
+    obs = _fmt_observation(ex, pred, 0.75)
+    assert "0.750" in obs
+    assert "input" in obs
+    assert "pred_a" in obs
 
 
 # 8. Validation assertions
