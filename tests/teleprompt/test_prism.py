@@ -296,27 +296,18 @@ def test_prism_state_on_optimizer():
 def test_compile_end_to_end():
     """PRISM.compile() runs, updates state, and sets
     _prism_knowledge on the result."""
-    lm = DummyLM([{"answer": "Paris"}] * 500)
+    lm = DummyLM([{"output": "a0"}] * 500)
     dspy.settings.configure(lm=lm)
 
-    class QA(dspy.Signature):
-        """Answer the question."""
-        question: str = dspy.InputField()
-        answer: str = dspy.OutputField()
-
-    student = dspy.Predict(QA)
-    trainset = [
-        Example(question=f"Q{i}?",
-                answer=f"A{i}").with_inputs("question")
-        for i in range(6)
-    ]
+    student = SimpleModule()
+    trainset = _trainset()
     init_knowledge = ["Answer with the capital city name"]
     initial_pool_size = len(init_knowledge)
 
     opt = PRISM(
         metric=score_match,
-        max_steps=5,
-        gen_every=2,
+        max_steps=10,
+        gen_every=3,
         num_threads=1,
         initial_knowledge=init_knowledge,
     )

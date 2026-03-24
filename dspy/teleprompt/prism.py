@@ -209,7 +209,9 @@ class PRISM(Teleprompter):
         deck = list(trainset)
         random.shuffle(deck)
         deck_idx = 0
-        for i in range(self.max_steps):
+        n_evals = 0
+        last_gen_at = 0
+        while n_evals < self.max_steps:
             self._collect_gen(ps, gen_futs)
             n_gen = sum(1 for f in gen_futs if not f.done())
             n_eval = max(1, self.num_threads - n_gen)
@@ -229,15 +231,20 @@ class PRISM(Teleprompter):
                         gen_futs.append(gp.submit(
                             self._gen_async, ps, gn, last_fail))
                 cands.append({"score": sc, "knowledge": k})
-            if gn and not self.gen_on_mistake and (i+1)%self.gen_every==0:
+                n_evals += 1
+            if (gn and not self.gen_on_mistake
+                    and self.gen_every
+                    and n_evals - last_gen_at >= self.gen_every):
                 self.state.gen_count += 1
+                last_gen_at = n_evals
                 gen_futs.append(gp.submit(
                     self._gen_async, ps, gn, last_fail))
             scs = [r[0] for r in res if r[0] is not None]
             avg = np.mean(scs) if scs else 0
             ra = np.mean(recent[-50:]) if recent else 0
-            logger.info(f"{i+1}/{self.max_steps} avg={avg:.3f}"
-                        f" ra50={ra:.3f} pool={len(ps)}"
+            logger.info(f"{n_evals}/{self.max_steps}"
+                        f" avg={avg:.3f} ra50={ra:.3f}"
+                        f" pool={len(ps)}"
                         f" gen={len(gen_futs)}")
         self._collect_gen(ps, gen_futs, wait=True)
         gp.shutdown(wait=True)
