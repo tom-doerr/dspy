@@ -53,12 +53,13 @@ class Rollout(BaseModel):
     score: float = 0.0
 
 class _GenKnowledge(dspy.Signature):
-    """Generate one novel knowledge piece to maximize reward (higher β = better).
+    """Generate one short, concise knowledge piece to maximize reward.
+    Pieces are ordered worst-to-best by β. Negative β pieces hurt performance.
     No repeats of existing pool items."""
-    pool: KnowledgePool = dspy.InputField(desc="Pieces with β/SE/n")
+    pool: KnowledgePool = dspy.InputField(desc="All pieces ordered by β (worst→best)")
     rollout: Rollout = dspy.InputField(desc="Recent example with score")
     reasoning: str = dspy.OutputField(desc="What patterns help/hurt? What's missing?")
-    new_knowledge: str = dspy.OutputField(desc="One novel knowledge string")
+    new_knowledge: str = dspy.OutputField(desc="One short, concise knowledge string")
 
 
 class _Piece:
@@ -73,6 +74,7 @@ class _CreditModel:
         self.X, self.y = [], []
         self.log_alpha = 0.0
         self.intercept = 0.0
+        self.cov = None  # (n_pieces, n_pieces) posterior covariance
 
     def add(self, sv, reward):
         self.X.append(sv); self.y.append(reward)
@@ -109,6 +111,7 @@ class _CreditModel:
         resid = y - Xb @ coefs
         s2 = np.sum(resid**2) / max(1, len(y) - nc)
         cov = s2 * Ainv
+        self.cov = cov[:n, :n]
         for i, p in enumerate(pieces):
             if i < n:
                 p.coef = float(coefs[i])
@@ -116,14 +119,33 @@ class _CreditModel:
         self.intercept = float(coefs[-1])
 
 
-def _sample(pieces, temp=1.0):
-    """Select pieces with positive draw. Unseen always included."""
-    sel = []
-    for i, p in enumerate(pieces):
-        if p.n_sel == 0: sel.append(i); continue
-        draw = p.coef + temp * p.stderr * np.random.randn() if temp > 0 else p.coef
-        if draw > 0: sel.append(i)
-    return sel if sel else [random.randrange(len(pieces))]
+def _draw_seen(pieces, seen, betas, temp, cov):
+    """Draw from joint posterior for seen pieces."""
+    if temp <= 0:
+        return betas
+    if cov is not None and len(seen) <= cov.shape[0]:
+        sub_cov = cov[np.ix_(seen, seen)]
+        try:
+            return np.random.multivariate_normal(
+                betas, temp**2 * sub_cov)
+        except np.linalg.LinAlgError:
+            pass
+    stds = [pieces[i].stderr for i in seen]
+    return betas + temp * np.array(stds) * np.random.randn(len(seen))
+
+
+def _sample(pieces, temp=1.0, cov=None):
+    """Select pieces with positive draw from joint posterior."""
+    n = len(pieces)
+    unseen = [i for i in range(n) if pieces[i].n_sel == 0]
+    seen = [i for i in range(n) if pieces[i].n_sel > 0]
+    if not seen:
+        return list(range(n)) if n else []
+    betas = np.array([pieces[i].coef for i in seen])
+    draws = _draw_seen(pieces, seen, betas, temp, cov)
+    sel = unseen + [seen[j] for j, d in enumerate(draws)
+                    if d > 0]
+    return sel if sel else [random.randrange(n)]
 
 
 def _build(pieces, idxs):
@@ -224,7 +246,8 @@ class PRISM(Teleprompter):
         jobs = []
         for _ in range(n):
             ex = random.choice(trainset)
-            sel = _sample(ps, self.temp) if ps else []
+            cov = self._credit_model.cov if hasattr(self, '_credit_model') else None
+            sel = _sample(ps, self.temp, cov) if ps else []
             k = _build(ps, sel) if sel else ""
             jobs.append((ex, sel, k))
         if n <= 1:
@@ -273,7 +296,7 @@ class PRISM(Teleprompter):
         """Background thread: return new knowledge strings."""
         import time as _time
         t0 = _time.time()
-        src = [p for p in ps if p.coef > 0 or p.n_sel == 0]
+        src = sorted(ps, key=lambda p: p.coef)
         pool = KnowledgePool(items=[
             KnowledgePiece(content=p.content, beta=p.coef,
                 se=p.stderr, n=p.n_sel) for p in src])
