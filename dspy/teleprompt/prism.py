@@ -69,24 +69,16 @@ class _Piece:
 
 
 class _CreditModel:
-    """Ridge with CV-optimized α: reward ~ Σ piece_i."""
+    """Linear credit model with fixed small α for stability."""
+    ALPHA = 1e-6
+
     def __init__(self, **kw):
         self.X, self.y = [], []
-        self.log_alpha = 0.0
         self.intercept = 0.0
-        self.cov = None  # (n_pieces, n_pieces) posterior covariance
+        self.cov = None
 
     def add(self, sv, reward):
         self.X.append(sv); self.y.append(reward)
-
-    def _loo_cv(self, Xb, y, alpha):
-        penalty = alpha * np.eye(Xb.shape[1])
-        penalty[-1, -1] = 0
-        A = Xb.T @ Xb + penalty
-        H = Xb @ np.linalg.inv(A) @ Xb.T
-        resid = y - H @ y
-        h = np.diag(H)
-        return np.mean((resid / (1 - h + 1e-10)) ** 2)
 
     def update(self, pieces):
         if len(self.y) < 3: return
@@ -95,15 +87,8 @@ class _CreditModel:
                        for r in self.X], dtype=np.float64)
         Xb = np.column_stack([X, np.ones(len(X))])
         y = np.array(self.y)
-        cv0 = self._loo_cv(Xb, y, np.exp(self.log_alpha))
-        for _ in range(5):
-            la = self.log_alpha + np.random.randn() * 0.5
-            cv = self._loo_cv(Xb, y, np.exp(la))
-            if cv < cv0:
-                self.log_alpha = la; cv0 = cv
-        alpha = np.exp(self.log_alpha)
         nc = Xb.shape[1]
-        penalty = alpha * np.eye(nc)
+        penalty = self.ALPHA * np.eye(nc)
         penalty[-1, -1] = 0  # don't regularize intercept
         A = Xb.T @ Xb + penalty
         Ainv = np.linalg.inv(A)
@@ -125,6 +110,9 @@ def _draw_seen(pieces, seen, betas, temp, cov):
         return betas
     if cov is not None and len(seen) <= cov.shape[0]:
         sub_cov = cov[np.ix_(seen, seen)]
+        sub_cov = (sub_cov + sub_cov.T) / 2
+        np.fill_diagonal(sub_cov, np.maximum(
+            np.diag(sub_cov), 1e-12))
         try:
             return np.random.multivariate_normal(
                 betas, temp**2 * sub_cov)
