@@ -132,7 +132,8 @@ def _sample(pieces, temp=1.0, cov=None):
 
 
 def _build(pieces, idxs):
-    return "\n".join(pieces[i].content for i in idxs)
+    order = sorted(idxs, key=lambda i: pieces[i].coef / max(1e-12, pieces[i].stderr), reverse=True)
+    return "\n".join(pieces[i].content for i in order)
 
 
 def _fmt_observation(ex, pred, sc):
