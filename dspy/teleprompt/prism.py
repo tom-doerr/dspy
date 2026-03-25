@@ -32,6 +32,8 @@ class PrismState:
     gen_duplicates: int = 0
     gen_failures: int = 0
     gen_too_long: int = 0
+    gen_pending: int = 0
+    gen_evals_during: int = 0
     last_eval_time: float = 0.0
     last_gen_time: float = 0.0
 
@@ -206,14 +208,17 @@ class PRISM(Teleprompter):
             gn = dspy.Predict(sig)
         cands, last_fail, recent = [], "", []
         gen_futs, gp = [], ThreadPoolExecutor(self.num_threads)
+        self._gen_start_evals = {}  # future id → n_evals at submit
         deck = list(trainset)
         random.shuffle(deck)
         deck_idx = 0
         n_evals = 0
         last_gen_at = 0
         while n_evals < self.max_steps:
-            self._collect_gen(ps, gen_futs)
-            n_gen = sum(1 for f in gen_futs if not f.done())
+            self._collect_gen(ps, gen_futs, n_evals)
+            n_gen = sum(1 for f in gen_futs
+                        if not f.done())
+            self.state.gen_pending = n_gen
             n_eval = max(1, self.num_threads - n_gen)
             res, deck_idx = self._step_batch(
                 student, deck, ps, n_eval,
@@ -228,8 +233,10 @@ class PRISM(Teleprompter):
                     pending = sum(1 for f in gen_futs if not f.done())
                     if self.gen_on_mistake and gn and pending < max(1, self.num_threads - 1):
                         self.state.gen_count += 1
-                        gen_futs.append(gp.submit(
-                            self._gen_async, ps, gn, last_fail))
+                        f = gp.submit(self._gen_async,
+                                      ps, gn, last_fail)
+                        gen_futs.append(f)
+                        self._gen_start_evals[id(f)] = n_evals
                 cands.append({"score": sc, "knowledge": k})
                 n_evals += 1
             if (gn and not self.gen_on_mistake
@@ -237,8 +244,10 @@ class PRISM(Teleprompter):
                     and n_evals - last_gen_at >= self.gen_every):
                 self.state.gen_count += 1
                 last_gen_at = n_evals
-                gen_futs.append(gp.submit(
-                    self._gen_async, ps, gn, last_fail))
+                f = gp.submit(self._gen_async,
+                              ps, gn, last_fail)
+                gen_futs.append(f)
+                self._gen_start_evals[id(f)] = n_evals
             scs = [r[0] for r in res if r[0] is not None]
             avg = np.mean(scs) if scs else 0
             ra = np.mean(recent[-50:]) if recent else 0
@@ -246,7 +255,8 @@ class PRISM(Teleprompter):
                         f" avg={avg:.3f} ra50={ra:.3f}"
                         f" pool={len(ps)}"
                         f" gen={len(gen_futs)}")
-        self._collect_gen(ps, gen_futs, wait=True)
+        self._collect_gen(ps, gen_futs, n_evals,
+                          wait=True)
         gp.shutdown(wait=True)
         return self._finalize(student, cands, ps)
 
@@ -329,12 +339,16 @@ class PRISM(Teleprompter):
             self.state.last_gen_time = _time.time() - t0
             logger.warning(f"Gen: {e}"); return []
 
-    def _collect_gen(self, ps, futs, wait=False):
-        """Harvest finished gen futures into the pool."""
+    def _collect_gen(self, ps, futs,
+                     n_evals=0, wait=False):
+        """Harvest finished gen futures."""
         done = [f for f in futs if f.done() or wait]
+        starts = getattr(self, '_gen_start_evals', {})
         existing = {p.content for p in ps}
         for f in done:
             futs.remove(f)
+            s = starts.pop(id(f), n_evals)
+            self.state.gen_evals_during = n_evals - s
             result = f.result() or []
             if not result:
                 self.state.gen_failures += 1
