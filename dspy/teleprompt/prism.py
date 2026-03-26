@@ -10,6 +10,7 @@ import logging
 import math
 import random
 import threading
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Callable, List
@@ -175,12 +176,14 @@ class PRISM(Teleprompter):
                  gen_every=10, gen_on_mistake=False, gen_lm=None,
                  initial_knowledge=None,
                  num_threads=1, temp=1.0,
-                 max_piece_words=15, **kw):
+                 max_piece_words=15,
+                 max_gen_parallel=None,
+                 gen_n_obs=1, **kw):
         super().__init__()
-        assert num_threads >= 1, f"num_threads must be >= 1, got {num_threads}"
-        assert max_steps >= 1, f"max_steps must be >= 1, got {max_steps}"
-        assert gen_every >= 0, f"gen_every must be >= 0, got {gen_every}"
-        assert temp >= 0, f"temp must be >= 0, got {temp}"
+        assert num_threads >= 1
+        assert max_steps >= 1
+        assert gen_every >= 0
+        assert temp >= 0
         self.metric = metric
         self.reward_fn = reward_fn
         self.max_steps = max_steps
@@ -191,6 +194,8 @@ class PRISM(Teleprompter):
         self.num_threads = num_threads
         self.temp = temp
         self.max_piece_words = max_piece_words
+        self.max_gen_parallel = max_gen_parallel or num_threads
+        self.gen_n_obs = max(1, gen_n_obs)
         self.state = PrismState()
 
     def compile(self, student, *, trainset, seed=0):
@@ -208,7 +213,8 @@ class PRISM(Teleprompter):
                 "new_knowledge",
                 desc=f"Novel knowledge rules, max {w} words each")
             gn = dspy.Predict(sig)
-        cands, last_fail, recent = [], "", []
+        cands, recent = [], []
+        recent_obs = deque(maxlen=self.gen_n_obs)
         gen_futs, gp = [], ThreadPoolExecutor(self.num_threads)
         self._gen_start_evals = {}  # future id → n_evals at submit
         deck = list(trainset)
@@ -231,12 +237,14 @@ class PRISM(Teleprompter):
                 self._upd(ps, sel, sc, cr)
                 recent.append(sc)
                 if sc < 0:
-                    last_fail = _fmt_observation(ex, pred, sc)
+                    recent_obs.append(
+                        _fmt_observation(ex, pred, sc))
+                    obs = self._merge_obs(recent_obs)
                     pending = sum(1 for f in gen_futs if not f.done())
-                    if self.gen_on_mistake and gn and pending < self.num_threads:
+                    if self.gen_on_mistake and gn and pending < self.max_gen_parallel:
                         self.state.gen_count += 1
                         f = gp.submit(self._gen_async,
-                                      ps, gn, last_fail)
+                                      ps, gn, obs)
                         gen_futs.append(f)
                         self._gen_start_evals[id(f)] = n_evals
                 cands.append({"score": sc, "knowledge": k})
@@ -246,8 +254,9 @@ class PRISM(Teleprompter):
                     and n_evals - last_gen_at >= self.gen_every):
                 self.state.gen_count += 1
                 last_gen_at = n_evals
+                obs = self._merge_obs(recent_obs)
                 f = gp.submit(self._gen_async,
-                              ps, gn, last_fail)
+                              ps, gn, obs)
                 gen_futs.append(f)
                 self._gen_start_evals[id(f)] = n_evals
             scs = [r[0] for r in res if r[0] is not None]
@@ -319,6 +328,19 @@ class PRISM(Teleprompter):
         pred = sum(ps[i].coef for i in sel) + cr.intercept
         self.state.ridge_pred_error = abs(sc - pred)
         cr.add(sv, sc); cr.update(ps)
+
+    @staticmethod
+    def _merge_obs(obs_deque):
+        texts, images = [], []
+        for o in obs_deque:
+            if isinstance(o, list):
+                texts.append(o[0])
+                images.extend(o[1:])
+            else:
+                texts.append(str(o))
+        sep = "\n---\n"
+        merged = sep.join(texts)
+        return [merged] + images if images else merged
 
     def _gen_async(self, ps, gen, observation):
         """Background thread: return new knowledge strings."""
