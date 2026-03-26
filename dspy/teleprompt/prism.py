@@ -178,7 +178,7 @@ class PRISM(Teleprompter):
                  num_threads=1, temp=1.0,
                  max_piece_words=15,
                  max_gen_parallel=None,
-                 gen_n_obs=1, **kw):
+                 gen_n_obs=1, ablation=False, **kw):
         super().__init__()
         assert num_threads >= 1
         assert max_steps >= 1
@@ -196,6 +196,7 @@ class PRISM(Teleprompter):
         self.max_piece_words = max_piece_words
         self.max_gen_parallel = max_gen_parallel or num_threads
         self.gen_n_obs = max(1, gen_n_obs)
+        self.ablation = ablation
         self.state = PrismState()
 
     def compile(self, student, *, trainset, seed=0):
@@ -228,7 +229,10 @@ class PRISM(Teleprompter):
                         if not f.done())
             self.state.gen_pending = n_gen
             n_eval = max(1, self.num_threads - n_gen)
-            res, deck_idx = self._step_batch(
+            step_fn = (self._step_batch_ablation
+                       if self.ablation
+                       else self._step_batch)
+            res, deck_idx = step_fn(
                 student, deck, ps, n_eval,
                 deck_idx=deck_idx, executor=gp)
             for sc, k, sel, ex, pred in res:
@@ -302,6 +306,22 @@ class PRISM(Teleprompter):
                 tp.shutdown(wait=False)
         return out, deck_idx
 
+    def _step_batch_ablation(self, student, deck, ps,
+                              n, deck_idx=0, executor=None):
+        jobs, out = [], []
+        for _ in range(n):
+            if deck_idx >= len(deck):
+                random.shuffle(deck); deck_idx = 0
+            cov = getattr(self._credit_model, 'cov', None)
+            sel = _sample(ps, self.temp, cov) if ps else []
+            jobs.append((deck[deck_idx], sel)); deck_idx += 1
+        tp = executor or ThreadPoolExecutor(n)
+        fs = {tp.submit(self._ablation_chain, student,
+              ex, ps, s): 0 for ex, s in jobs}
+        for f in as_completed(fs): out.extend(f.result())
+        if not executor: tp.shutdown(wait=False)
+        return out, deck_idx
+
     def _eval(self, student, ex, knowledge):
         import copy, time as _time
         t0 = _time.time()
@@ -319,6 +339,35 @@ class PRISM(Teleprompter):
             return sc, pred
         except Exception as e:
             logger.warning(f"Eval: {e}"); return None, None
+
+    def _ablation_chain(self, student, ex, ps, sel):
+        """Eval all pieces, remove from end one by one."""
+        sel = list(sel)
+        random.shuffle(sel)
+        pcs = [ps[i].content for i in sel]
+        out = []
+        for n in range(len(pcs), -1, -1):
+            k = "\n".join(pcs[:n])
+            sc, pred = self._eval_kw(student, ex, k)
+            out.append((sc, k, list(sel[:n]), ex, pred))
+        return out
+
+    def _eval_kw(self, student, ex, knowledge):
+        """Eval with knowledge as input kwarg."""
+        import copy, time as _t
+        t0 = _t.time()
+        try:
+            p = copy.deepcopy(student)
+            inp = dict(ex.inputs()); inp['knowledge'] = knowledge
+            pred = p(**inp); s = self.metric(ex, pred)
+            sc = (float(self.reward_fn(ex, pred)) if self.reward_fn
+                  else float(s) if isinstance(s, (int, float))
+                  else float(getattr(s, 'score', 0)))
+            self.state.last_eval_time = _t.time() - t0
+            return sc, pred
+        except Exception as e:
+            logger.warning(f"Eval: {e}")
+            return None, None
 
     def _upd(self, ps, sel, sc, cr):
         if not math.isfinite(sc): return
