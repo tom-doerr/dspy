@@ -34,6 +34,7 @@ class PrismState:
     gen_too_long: int = 0
     gen_pending: int = 0
     gen_evals_during: int = 0
+    ridge_pred_error: float = 0.0
     last_eval_time: float = 0.0
     last_gen_time: float = 0.0
 
@@ -313,7 +314,10 @@ class PRISM(Teleprompter):
     def _upd(self, ps, sel, sc, cr):
         if not math.isfinite(sc): return
         for i in sel: ps[i].n_sel += 1
-        sv = [1.0 if i in set(sel) else 0.0 for i in range(len(ps))]
+        sv = [1.0 if i in set(sel) else 0.0
+              for i in range(len(ps))]
+        pred = sum(ps[i].coef for i in sel) + cr.intercept
+        self.state.ridge_pred_error = abs(sc - pred)
         cr.add(sv, sc); cr.update(ps)
 
     def _gen_async(self, ps, gen, observation):
