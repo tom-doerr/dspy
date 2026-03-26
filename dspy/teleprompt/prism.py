@@ -229,12 +229,21 @@ class PRISM(Teleprompter):
                         if not f.done())
             self.state.gen_pending = n_gen
             n_eval = max(1, self.num_threads - n_gen)
-            step_fn = (self._step_batch_ablation
-                       if self.ablation
-                       else self._step_batch)
-            res, deck_idx = step_fn(
-                student, deck, ps, n_eval,
-                deck_idx=deck_idx, executor=gp)
+            if self.ablation:
+                res, deck_idx = self._step_batch_ablation(
+                    student, deck, ps, n_eval,
+                    deck_idx=deck_idx, executor=gp)
+                for (sc, k, sel, ex, pred), abls in res:
+                    if sc is not None:
+                        self._upd(ps, sel, sc, cr)
+                    for asc, asel in abls:
+                        if asc is not None and math.isfinite(asc):
+                            self._upd(ps, asel, asc, cr)
+                res = [(sc, k, sel, ex, pred) for (sc, k, sel, ex, pred), _ in res]
+            else:
+                res, deck_idx = self._step_batch(
+                    student, deck, ps, n_eval,
+                    deck_idx=deck_idx, executor=gp)
             for sc, k, sel, ex, pred in res:
                 if sc is None: continue
                 self.state.last_selected = sel
@@ -318,7 +327,7 @@ class PRISM(Teleprompter):
         tp = executor or ThreadPoolExecutor(n)
         fs = {tp.submit(self._ablation_chain, student,
               ex, ps, s): 0 for ex, s in jobs}
-        for f in as_completed(fs): out.extend(f.result())
+        for f in as_completed(fs): out.append(f.result())
         if not executor: tp.shutdown(wait=False)
         return out, deck_idx
 
@@ -341,16 +350,33 @@ class PRISM(Teleprompter):
             logger.warning(f"Eval: {e}"); return None, None
 
     def _ablation_chain(self, student, ex, ps, sel):
-        """Eval all pieces, remove from end one by one."""
-        sel = list(sel)
-        random.shuffle(sel)
+        """Main eval + ablation sub-steps (Ridge only)."""
+        sel = list(sel); random.shuffle(sel)
         pcs = [ps[i].content for i in sel]
-        out = []
-        for n in range(len(pcs), -1, -1):
+        k_full = "\n".join(pcs)
+        sc, pred = self._eval_kw(student, ex, k_full)
+        main = (sc, k_full, list(sel), ex, pred)
+        abls = []
+        for n in range(len(pcs) - 1, -1, -1):
             k = "\n".join(pcs[:n])
-            sc, pred = self._eval_kw(student, ex, k)
-            out.append((sc, k, list(sel[:n]), ex, pred))
-        return out
+            asc = self._eval_kw_reward(student, ex, k)
+            abls.append((asc, list(sel[:n])))
+        return main, abls
+
+    def _eval_kw_reward(self, student, ex, knowledge):
+        """Eval returning reward only (no metric tracking)."""
+        import copy
+        try:
+            p = copy.deepcopy(student)
+            inp = dict(ex.inputs()); inp['knowledge'] = knowledge
+            pred = p(**inp)
+            if self.reward_fn:
+                return float(self.reward_fn(ex, pred))
+            y = bool(getattr(ex, 'suitable_for_posting', None))
+            yh = bool(getattr(pred, 'suitable_for_posting', None))
+            return 1.0 if y == yh else -1.0
+        except Exception as e:
+            logger.warning(f"Eval: {e}"); return None
 
     def _eval_kw(self, student, ex, knowledge):
         """Eval with knowledge as input kwarg."""
