@@ -127,7 +127,9 @@ def _sample(pieces, temp=1.0, cov=None):
         return []
     betas = np.array([p.coef for p in pieces])
     draws = _draw_seen(pieces, list(range(n)), betas, temp, cov)
-    sel = [i for i, d in enumerate(draws) if d > 0]
+    pos = betas[betas > 0]
+    thr = float(pos.mean()) if len(pos) else 0.0
+    sel = [i for i, d in enumerate(draws) if d > thr]
     return sel if sel else [random.randrange(n)]
 
 
