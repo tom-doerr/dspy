@@ -36,6 +36,7 @@ class PrismState:
     gen_pending: int = 0
     gen_evals_during: int = 0
     ridge_pred_error: float = 0.0
+    eval_failures: int = 0
     last_eval_time: float = 0.0
     last_gen_time: float = 0.0
 
@@ -122,14 +123,11 @@ def _draw_seen(pieces, seen, betas, temp, cov):
 def _sample(pieces, temp=1.0, cov=None):
     """Select pieces with positive draw from joint posterior."""
     n = len(pieces)
-    unseen = [i for i in range(n) if pieces[i].n_sel == 0]
-    seen = [i for i in range(n) if pieces[i].n_sel > 0]
-    if not seen:
-        return list(range(n)) if n else []
-    betas = np.array([pieces[i].coef for i in seen])
-    draws = _draw_seen(pieces, seen, betas, temp, cov)
-    sel = unseen + [seen[j] for j, d in enumerate(draws)
-                    if d > 0]
+    if not n:
+        return []
+    betas = np.array([p.coef for p in pieces])
+    draws = _draw_seen(pieces, list(range(n)), betas, temp, cov)
+    sel = [i for i, d in enumerate(draws) if d > 0]
     return sel if sel else [random.randrange(n)]
 
 
@@ -347,7 +345,9 @@ class PRISM(Teleprompter):
             self.state.last_eval_time = _time.time() - t0
             return sc, pred
         except Exception as e:
-            logger.warning(f"Eval: {e}"); return None, None
+            logger.warning(f"Eval: {e}")
+            self.state.eval_failures += 1
+            return None, None
 
     def _ablation_chain(self, student, ex, ps, sel):
         """Main eval + ablation sub-steps (Ridge only)."""
@@ -376,7 +376,8 @@ class PRISM(Teleprompter):
             yh = bool(getattr(pred, 'suitable_for_posting', None))
             return 1.0 if y == yh else -1.0
         except Exception as e:
-            logger.warning(f"Eval: {e}"); return None
+            logger.warning(f"Eval: {e}")
+            self.state.eval_failures += 1; return None
 
     def _eval_kw(self, student, ex, knowledge):
         """Eval with knowledge as input kwarg."""
@@ -393,6 +394,7 @@ class PRISM(Teleprompter):
             return sc, pred
         except Exception as e:
             logger.warning(f"Eval: {e}")
+            self.state.eval_failures += 1
             return None, None
 
     def _upd(self, ps, sel, sc, cr):
