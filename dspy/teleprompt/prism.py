@@ -246,7 +246,6 @@ class PRISM(Teleprompter):
                     deck_idx=deck_idx, executor=gp)
             for sc, k, sel, ex, pred in res:
                 if sc is None: continue
-                self.state.last_selected = sel
                 self._upd(ps, sel, sc, cr)
                 recent.append(sc)
                 if sc < 0:
@@ -299,12 +298,12 @@ class PRISM(Teleprompter):
             jobs.append((ex, sel, k))
         if n <= 1:
             ex, sel, k = jobs[0]
-            sc, pred = self._eval(student, ex, k)
+            sc, pred = self._eval(student, ex, k, sel)
             return [(sc, k, sel, ex, pred)], deck_idx
         out = []
         tp = executor or ThreadPoolExecutor(n)
         try:
-            fs = {tp.submit(self._eval, student, ex, k):
+            fs = {tp.submit(self._eval, student, ex, k, sel):
                   (sel, k, ex) for ex, sel, k in jobs}
             for f in as_completed(fs):
                 sel, k, ex = fs[f]
@@ -331,8 +330,10 @@ class PRISM(Teleprompter):
         if not executor: tp.shutdown(wait=False)
         return out, deck_idx
 
-    def _eval(self, student, ex, knowledge):
+    def _eval(self, student, ex, knowledge, sel=None):
         import copy, time as _time
+        if sel is not None:
+            self.state.last_selected = sel
         t0 = _time.time()
         try:
             prog = copy.deepcopy(student)
@@ -356,7 +357,7 @@ class PRISM(Teleprompter):
         sel = list(sel); random.shuffle(sel)
         pcs = [ps[i].content for i in sel]
         k_full = "\n".join(pcs)
-        sc, pred = self._eval_kw(student, ex, k_full)
+        sc, pred = self._eval_kw(student, ex, k_full, sel)
         main = (sc, k_full, list(sel), ex, pred)
         abls = []
         for n in range(len(pcs) - 1, -1, -1):
@@ -381,9 +382,11 @@ class PRISM(Teleprompter):
             logger.warning(f"Eval: {e}")
             self.state.eval_failures += 1; return None
 
-    def _eval_kw(self, student, ex, knowledge):
+    def _eval_kw(self, student, ex, knowledge, sel=None):
         """Eval with knowledge as input kwarg."""
         import copy, time as _t
+        if sel is not None:
+            self.state.last_selected = sel
         t0 = _t.time()
         try:
             p = copy.deepcopy(student)
