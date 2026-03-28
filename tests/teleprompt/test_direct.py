@@ -176,6 +176,42 @@ def test_direct_compile_fixes_single_mistake():
     assert optimized.direct_history[0]["edits"][0]["resulting_metric"] == 1.0
 
 
+def test_direct_reverts_failed_edit_but_keeps_attempt_in_history():
+    task_lm = RuleAwareTaskLM({"q1": ("If question is q1, answer blue.", "blue")})
+    optimizer_lm = DummyLM(
+        [
+            {
+                "module_edits": {
+                    "predictor": [
+                        {"search": "", "replace": "If question is q1, answer red."},
+                    ]
+                }
+            },
+            {
+                "module_edits": {
+                    "predictor": [
+                        {"search": "", "replace": "If question is q1, answer blue."},
+                    ]
+                }
+            },
+        ]
+    )
+
+    student = SimpleModule()
+    student.set_lm(task_lm)
+    optimizer = Direct(metric=score_match, prompt_model=optimizer_lm, max_iters_per_mistake=2)
+
+    trainset = [Example(question="q1", answer="blue").with_inputs("question")]
+    optimized = optimizer.compile(student, trainset=trainset)
+
+    assert optimized(question="q1").answer == "blue"
+    assert "If question is q1, answer blue." in optimized.predictor.signature.instructions
+    assert "If question is q1, answer red." not in optimized.predictor.signature.instructions
+    assert [step["resulting_metric"] for step in optimized.direct_history[0]["edits"]] == [0.0, 1.0]
+    assert optimized.direct_history[0]["edits"][0]["edits"]["predictor"][0]["replace"] == "If question is q1, answer red."
+    assert optimized.direct_stats["edits_applied"] == 1
+
+
 def test_direct_halves_history_after_context_error():
     task_lm = RuleAwareTaskLM(
         {

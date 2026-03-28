@@ -10,6 +10,7 @@ from dspy.predict import Predict
 from dspy.teleprompt.prism import (
     PRISM, PrismState, _CreditModel, _Piece,
     _build, _fmt_observation, _sample, _set_instructions,
+    _summarize_prediction,
 )
 from dspy.utils.dummies import DummyLM
 
@@ -251,6 +252,17 @@ def test_fmt_observation():
     assert "0.750" in obs
     assert "input" in obs
     assert "pred_a" in obs
+
+
+def test_summarize_prediction_drops_completions_and_logprobs():
+    pred = dspy.Prediction(output="answer", logprobs={"token": -0.1})
+    pred._completions = {"large": "payload"}
+
+    summarized = _summarize_prediction(pred)
+
+    assert summarized.output == "answer"
+    assert summarized._completions is None
+    assert "logprobs" not in summarized.keys()
 
 
 # 8. Validation assertions

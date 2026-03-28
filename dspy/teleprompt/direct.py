@@ -53,21 +53,26 @@ class DirectSignature(dspy.Signature):
     """You improve DSPy module instructions directly from mistake history.
 
     The `history` input is ordered from oldest to newest. The final history entry is the current sample,
-    and it already includes every edit attempt made on that sample so far.
+    and it already includes every edit attempt made on that sample so far, including attempts that were
+    reverted because they did not fix the mistake.
+
+    `current_instructions` contains only the currently accepted instructions. Failed edit attempts may
+    appear in `history` even when they are not present in `current_instructions`.
 
     Produce targeted search/replace blocks for the current instructions.
     - Prefer small, concrete edits over full rewrites.
     - Reuse prior attempts in the history to avoid repeating ineffective edits.
+    - Treat reverted history entries as failed experiments, not as active instructions.
     - Only emit edits for modules that should change.
     - If `search` is empty, `replace` will be appended.
     - If `replace` is empty, the matched `search` text will be deleted.
     """
 
     history: list[DirectHistoryEntry] = dspy.InputField(
-        desc="Mistake history ordered from oldest to newest; the newest sample is last.",
+        desc="Mistake history ordered from oldest to newest; failed edit attempts may still appear even if they were reverted.",
     )
     current_instructions: dict[str, str] = dspy.InputField(
-        desc="Current instructions for each module that may be edited.",
+        desc="Current accepted instructions for each module that may be edited.",
     )
     module_names: list[str] = dspy.InputField(
         desc="Ordered predictor names available for editing.",
@@ -123,6 +128,20 @@ def _apply_module_edits(program: Module, module_edits: dict[str, list[SearchRepl
             applied = True
 
     return applied
+
+
+def _current_instructions(program: Module) -> dict[str, str]:
+    return {
+        name: predictor.signature.instructions
+        for name, predictor in program.named_predictors()
+    }
+
+
+def _restore_instructions(program: Module, instructions: dict[str, str]) -> None:
+    for name, predictor in program.named_predictors():
+        if name not in instructions:
+            continue
+        predictor.signature = predictor.signature.with_instructions(instructions[name])
 
 
 class Direct(Teleprompter):
@@ -217,10 +236,10 @@ class Direct(Teleprompter):
                 if not module_edits:
                     break
 
+                prior_instructions = _current_instructions(program)
                 if not _apply_module_edits(program, module_edits):
                     break
 
-                stats["edits_applied"] += 1
                 updated_prediction, updated_score = self._score_example(program, example)
                 self._record_reflection_metric(example, updated_prediction, updated_score)
                 history[-1].edits.append(
@@ -231,7 +250,10 @@ class Direct(Teleprompter):
                 )
 
                 if updated_score > 0:
+                    stats["edits_applied"] += 1
                     break
+
+                _restore_instructions(program, prior_instructions)
 
         program.direct_history = [entry.model_dump(mode="json") for entry in history]
         program.direct_stats = stats

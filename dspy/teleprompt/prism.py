@@ -167,6 +167,18 @@ def _set_instructions(prog, knowledge):
             base + "\n\n" + knowledge)
 
 
+def _summarize_prediction(pred):
+    """Drop heavyweight completion payloads once scoring is done."""
+    if pred is None or not isinstance(pred, dspy.Prediction):
+        return pred
+
+    return dspy.Prediction(**{
+        key: getattr(pred, key)
+        for key in pred.keys()
+        if key != "logprobs"
+    })
+
+
 class PRISM(Teleprompter):
     """Pool Regression Inference Selection Model.
 
@@ -180,10 +192,10 @@ class PRISM(Teleprompter):
                  max_gen_parallel=None,
                  gen_n_obs=1, ablation=False, **kw):
         super().__init__()
-        assert num_threads >= 1
-        assert max_steps >= 1
-        assert gen_every >= 0
-        assert temp >= 0
+        assert num_threads >= 1, "num_threads"
+        assert max_steps >= 1, "max_steps"
+        assert gen_every >= 0, "gen_every"
+        assert temp >= 0, "temp"
         self.metric = metric
         self.reward_fn = reward_fn
         self.max_steps = max_steps
@@ -338,7 +350,8 @@ class PRISM(Teleprompter):
         try:
             prog = copy.deepcopy(student)
             _set_instructions(prog, knowledge)
-            pred = prog(**ex.inputs())
+            with dspy.context(trace=[]):
+                pred = prog(**ex.inputs())
             s = self.metric(ex, pred)
             if self.reward_fn:
                 sc = float(self.reward_fn(ex, pred))
@@ -346,7 +359,7 @@ class PRISM(Teleprompter):
                 sc = float(s) if isinstance(s, (int, float)) \
                     else float(getattr(s, 'score', 0))
             self.state.last_eval_time = _time.time() - t0
-            return sc, pred
+            return sc, _summarize_prediction(pred)
         except Exception as e:
             logger.warning(f"Eval: {e}")
             self.state.eval_failures += 1
@@ -372,7 +385,8 @@ class PRISM(Teleprompter):
         try:
             p = copy.deepcopy(student)
             inp = dict(ex.inputs()); inp['knowledge'] = knowledge
-            pred = p(**inp)
+            with dspy.context(trace=[]):
+                pred = p(**inp)
             if self.reward_fn:
                 return float(self.reward_fn(ex, pred))
             y = bool(getattr(ex, 'suitable_for_posting', None))
@@ -391,12 +405,14 @@ class PRISM(Teleprompter):
         try:
             p = copy.deepcopy(student)
             inp = dict(ex.inputs()); inp['knowledge'] = knowledge
-            pred = p(**inp); s = self.metric(ex, pred)
+            with dspy.context(trace=[]):
+                pred = p(**inp)
+            s = self.metric(ex, pred)
             sc = (float(self.reward_fn(ex, pred)) if self.reward_fn
                   else float(s) if isinstance(s, (int, float))
                   else float(getattr(s, 'score', 0)))
             self.state.last_eval_time = _t.time() - t0
-            return sc, pred
+            return sc, _summarize_prediction(pred)
         except Exception as e:
             logger.warning(f"Eval: {e}")
             self.state.eval_failures += 1
@@ -435,10 +451,11 @@ class PRISM(Teleprompter):
         try:
             kw = {"pool": pool, "observation": observation}
             if self.gen_lm:
-                with dspy.context(lm=self.gen_lm):
+                with dspy.context(lm=self.gen_lm, trace=[]):
                     r = gen(**kw)
             else:
-                r = gen(**kw)
+                with dspy.context(trace=[]):
+                    r = gen(**kw)
             out = r.new_knowledge
             self.state.last_gen_time = _time.time() - t0
             if isinstance(out, str):
