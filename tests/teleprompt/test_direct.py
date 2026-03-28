@@ -62,6 +62,27 @@ class RuleAwareTaskLM(DummyLM):
         )
 
 
+class InstructionAnswerTaskLM(DummyLM):
+    def __init__(self, keyword_answers: list[tuple[str, str]], default_answer: str = "wrong"):
+        super().__init__([])
+        self.keyword_answers = keyword_answers
+        self.default_answer = default_answer
+
+    def forward(self, prompt=None, messages=None, **kwargs):
+        messages = messages or [{"role": "user", "content": prompt}]
+        system_prompt = messages[0]["content"]
+        output = self.default_answer
+        for keyword, answer in self.keyword_answers:
+            if keyword in system_prompt:
+                output = answer
+                break
+        return dotdict(
+            choices=[dotdict(message=dotdict(content=self._format_answer_fields({"answer": output}), tool_calls=None), finish_reason="stop")],
+            usage=dotdict(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+            model="dummy",
+        )
+
+
 class HistoryAwareDirectLM(DummyLM):
     def __init__(self):
         super().__init__([])
@@ -114,6 +135,8 @@ class RecordingMetric:
 def test_direct_module_choice_and_signature_order():
     optimizer = Direct(metric=score_match)
     assert isinstance(optimizer.optimizer_module, dspy.Predict)
+    assert optimizer.max_iters_per_mistake == 3
+    assert optimizer.min_metric_to_skip == 1.0
     assert list(optimizer.optimizer_module.signature.input_fields.keys()) == [
         "history",
         "current_instructions",
@@ -208,8 +231,94 @@ def test_direct_reverts_failed_edit_but_keeps_attempt_in_history():
     assert "If question is q1, answer blue." in optimized.predictor.signature.instructions
     assert "If question is q1, answer red." not in optimized.predictor.signature.instructions
     assert [step["resulting_metric"] for step in optimized.direct_history[0]["edits"]] == [0.0, 1.0]
+    assert [step["accepted"] for step in optimized.direct_history[0]["edits"]] == [False, True]
     assert optimized.direct_history[0]["edits"][0]["edits"]["predictor"][0]["replace"] == "If question is q1, answer red."
     assert optimized.direct_stats["edits_applied"] == 1
+
+
+def test_direct_accepts_improving_edits_until_threshold():
+    def score_answer(example, prediction):
+        if prediction is None:
+            return 0.0
+        return {"wrong": 0.0, "mid": 0.4, "better": 0.7, "best": 1.0}[prediction.answer]
+
+    task_lm = InstructionAnswerTaskLM(
+        [
+            ("best rule", "best"),
+            ("better rule", "better"),
+            ("mid rule", "mid"),
+        ]
+    )
+    optimizer_lm = DummyLM(
+        [
+            {"module_edits": {"predictor": [{"search": "", "replace": "mid rule"}]}},
+            {"module_edits": {"predictor": [{"search": "mid rule", "replace": "better rule"}]}},
+            {"module_edits": {"predictor": [{"search": "better rule", "replace": "best rule"}]}},
+        ]
+    )
+
+    student = SimpleModule()
+    student.set_lm(task_lm)
+    optimizer = Direct(metric=score_answer, prompt_model=optimizer_lm, max_iters_per_mistake=3)
+
+    trainset = [Example(question="q1").with_inputs("question")]
+    optimized = optimizer.compile(student, trainset=trainset)
+
+    assert optimized(question="q1").answer == "best"
+    assert "best rule" in optimized.predictor.signature.instructions
+    assert "better rule" not in optimized.predictor.signature.instructions
+    assert [step["resulting_metric"] for step in optimized.direct_history[0]["edits"]] == [0.4, 0.7, 1.0]
+    assert [step["accepted"] for step in optimized.direct_history[0]["edits"]] == [True, True, True]
+    assert optimized.direct_stats["samples_optimized"] == 1
+    assert optimized.direct_stats["edits_applied"] == 3
+
+
+def test_direct_skips_scores_at_or_above_default_threshold():
+    def score_answer(example, prediction):
+        if prediction is None:
+            return 0.0
+        return {"good": 1.5}.get(prediction.answer, 0.0)
+
+    task_lm = InstructionAnswerTaskLM([], default_answer="good")
+    student = SimpleModule()
+    student.set_lm(task_lm)
+    optimizer = Direct(metric=score_answer, prompt_model=DummyLM([]))
+
+    trainset = [Example(question="q1").with_inputs("question")]
+    optimized = optimizer.compile(student, trainset=trainset)
+
+    assert optimized(question="q1").answer == "good"
+    assert optimized.direct_history == []
+    assert optimized.direct_stats["samples_skipped"] == 1
+    assert optimized.direct_stats["samples_optimized"] == 0
+
+
+def test_direct_can_always_optimize_when_skip_threshold_is_none():
+    def score_answer(example, prediction):
+        if prediction is None:
+            return 0.0
+        return {"good": 1.0, "great": 2.0}.get(prediction.answer, 0.0)
+
+    task_lm = InstructionAnswerTaskLM([("great rule", "great")], default_answer="good")
+    optimizer_lm = DummyLM(
+        [
+            {"module_edits": {"predictor": [{"search": "", "replace": "great rule"}]}},
+        ]
+    )
+
+    student = SimpleModule()
+    student.set_lm(task_lm)
+    optimizer = Direct(metric=score_answer, prompt_model=optimizer_lm, min_metric_to_skip=None, max_iters_per_mistake=1)
+
+    trainset = [Example(question="q1").with_inputs("question")]
+    optimized = optimizer.compile(student, trainset=trainset)
+
+    assert optimized(question="q1").answer == "great"
+    assert optimized.direct_history[0]["metric"] == 1.0
+    assert optimized.direct_history[0]["edits"][0]["resulting_metric"] == 2.0
+    assert optimized.direct_history[0]["edits"][0]["accepted"] is True
+    assert optimized.direct_stats["samples_skipped"] == 0
+    assert optimized.direct_stats["samples_optimized"] == 1
 
 
 def test_direct_halves_history_after_context_error():
@@ -304,17 +413,17 @@ def test_direct_halves_single_history_entry_by_edit_history():
             sample={"question": "q"},
             metric=0.0,
             edits=[
-                DirectEditStep(edits={}, resulting_metric=0.1),
-                DirectEditStep(edits={}, resulting_metric=0.2),
-                DirectEditStep(edits={}, resulting_metric=0.3),
-                DirectEditStep(edits={}, resulting_metric=0.4),
+                DirectEditStep(edits={}, resulting_metric=0.2, accepted=True),
+                DirectEditStep(edits={}, resulting_metric=0.1, accepted=False),
+                DirectEditStep(edits={}, resulting_metric=0.5, accepted=True),
+                DirectEditStep(edits={}, resulting_metric=0.4, accepted=False),
             ],
         )
     ]
 
     assert optimizer._halve_history(history) is True
     assert history[0].metric == 0.2
-    assert [step.resulting_metric for step in history[0].edits] == [0.3, 0.4]
+    assert [step.resulting_metric for step in history[0].edits] == [0.5, 0.4]
 
 
 def test_direct_history_summarizes_images_without_base64_payloads():

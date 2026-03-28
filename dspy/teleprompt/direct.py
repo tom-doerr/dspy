@@ -29,16 +29,20 @@ class SearchReplaceBlock(pydantic.BaseModel):
 class DirectEditStep(pydantic.BaseModel):
     edits: dict[str, list[SearchReplaceBlock]] = pydantic.Field(
         default_factory=dict,
-        description="Search/replace blocks that were applied to predictor instructions.",
+        description="Search/replace blocks that were attempted on predictor instructions.",
     )
     resulting_metric: float = pydantic.Field(
         description="Metric value after applying the edits.",
+    )
+    accepted: bool = pydantic.Field(
+        default=True,
+        description="Whether the edits improved the metric and were kept in the live instructions.",
     )
 
 
 class DirectHistoryEntry(pydantic.BaseModel):
     sample: dict[str, Any] = pydantic.Field(
-        description="The sample that produced a metric value at or below zero.",
+        description="The sample currently being optimized.",
     )
     metric: float = pydantic.Field(
         description="Metric value for the sample before any edits in this history entry.",
@@ -50,11 +54,11 @@ class DirectHistoryEntry(pydantic.BaseModel):
 
 
 class DirectSignature(dspy.Signature):
-    """You improve DSPy module instructions directly from mistake history.
+    """You improve DSPy module instructions directly from optimization history.
 
     The `history` input is ordered from oldest to newest. The final history entry is the current sample,
     and it already includes every edit attempt made on that sample so far, including attempts that were
-    reverted because they did not fix the mistake.
+    reverted because they did not improve the metric.
 
     `current_instructions` contains only the currently accepted instructions. Failed edit attempts may
     appear in `history` even when they are not present in `current_instructions`.
@@ -63,13 +67,14 @@ class DirectSignature(dspy.Signature):
     - Prefer small, concrete edits over full rewrites.
     - Reuse prior attempts in the history to avoid repeating ineffective edits.
     - Treat reverted history entries as failed experiments, not as active instructions.
+    - Each history edit attempt includes whether it was accepted and kept.
     - Only emit edits for modules that should change.
     - If `search` is empty, `replace` will be appended.
     - If `replace` is empty, the matched `search` text will be deleted.
     """
 
     history: list[DirectHistoryEntry] = dspy.InputField(
-        desc="Mistake history ordered from oldest to newest; failed edit attempts may still appear even if they were reverted.",
+        desc="Optimization history ordered from oldest to newest; failed edit attempts may still appear even if they were reverted.",
     )
     current_instructions: dict[str, str] = dspy.InputField(
         desc="Current accepted instructions for each module that may be edited.",
@@ -145,11 +150,13 @@ def _restore_instructions(program: Module, instructions: dict[str, str]) -> None
 
 
 class Direct(Teleprompter):
-    """Mistake-driven direct instruction optimizer.
+    """Threshold-driven direct instruction optimizer.
 
-    Direct walks the trainset sequentially. For each sample whose metric is <= 0, it asks an optimizer
-    module for search/replace edits over the current predictor instructions. The optimizer keeps working on
-    that sample for up to `max_iters_per_mistake` iterations before moving on to the next sample.
+    Direct walks the trainset sequentially. It skips samples whose metric is already at or above
+    `min_metric_to_skip` unless that threshold is `None`. For each remaining sample, it asks an optimizer
+    module for search/replace edits over the current predictor instructions. Strictly improving edits are
+    kept; non-improving edits are reverted but still recorded in history. The optimizer keeps working on
+    a sample for up to `max_iters_per_mistake` iterations before moving on to the next sample.
     """
 
     def __init__(
@@ -157,7 +164,8 @@ class Direct(Teleprompter):
         *,
         metric,
         prompt_model=None,
-        max_iters_per_mistake: int = 20,
+        max_iters_per_mistake: int = 3,
+        min_metric_to_skip: float | None = 1.0,
         max_history_steps: int | None = None,
         max_history_tokens: int | None = None,
         trim_history_on_context_error: bool = True,
@@ -168,6 +176,10 @@ class Direct(Teleprompter):
             raise ValueError("Direct requires a metric.")
         if max_iters_per_mistake < 1:
             raise ValueError("max_iters_per_mistake must be at least 1.")
+        if min_metric_to_skip is not None and (
+            isinstance(min_metric_to_skip, bool) or not isinstance(min_metric_to_skip, numbers.Real)
+        ):
+            raise ValueError("min_metric_to_skip must be numeric or None.")
         if max_history_steps is not None and max_history_steps < 1:
             raise ValueError("max_history_steps must be at least 1 when provided.")
         if max_history_tokens is not None and max_history_tokens < 1:
@@ -176,6 +188,7 @@ class Direct(Teleprompter):
         self.metric = metric
         self.prompt_model = prompt_model
         self.max_iters_per_mistake = max_iters_per_mistake
+        self.min_metric_to_skip = None if min_metric_to_skip is None else float(min_metric_to_skip)
         self.max_history_steps = max_history_steps
         self.max_history_tokens = max_history_tokens
         self.trim_history_on_context_error = trim_history_on_context_error
@@ -206,7 +219,8 @@ class Direct(Teleprompter):
         prompt_model = self._resolve_prompt_model(program)
         history: list[DirectHistoryEntry] = []
         stats = {
-            "mistakes_seen": 0,
+            "samples_optimized": 0,
+            "samples_skipped": 0,
             "edits_applied": 0,
             "history_halvings": 0,
             "context_retries": 0,
@@ -215,16 +229,18 @@ class Direct(Teleprompter):
         for example in trainset:
             prediction, score = self._score_example(program, example)
             self._record_initial_train_metric(example, prediction, score)
-            if score > 0:
+            if not self._should_optimize_score(score):
+                stats["samples_skipped"] += 1
                 continue
 
-            stats["mistakes_seen"] += 1
+            stats["samples_optimized"] += 1
             history.append(
                 DirectHistoryEntry(
                     sample=_summarize_sample_for_history(example.toDict()),
                     metric=score,
                 )
             )
+            current_score = score
 
             for _ in range(self.max_iters_per_mistake):
                 while self._history_exceeds_limits(history, prompt_model):
@@ -242,16 +258,21 @@ class Direct(Teleprompter):
 
                 updated_prediction, updated_score = self._score_example(program, example)
                 self._record_reflection_metric(example, updated_prediction, updated_score)
+                accepted = updated_score > current_score
                 history[-1].edits.append(
                     DirectEditStep(
                         edits=module_edits,
                         resulting_metric=updated_score,
+                        accepted=accepted,
                     )
                 )
 
-                if updated_score > 0:
+                if accepted:
                     stats["edits_applied"] += 1
-                    break
+                    current_score = updated_score
+                    if not self._should_optimize_score(current_score):
+                        break
+                    continue
 
                 _restore_instructions(program, prior_instructions)
 
@@ -271,6 +292,9 @@ class Direct(Teleprompter):
             program.direct_valset_score = program.direct_valset_result.score
 
         return program
+
+    def _should_optimize_score(self, score: float) -> bool:
+        return self.min_metric_to_skip is None or score < self.min_metric_to_skip
 
     def _record_initial_train_metric(
         self,
@@ -416,7 +440,10 @@ class Direct(Teleprompter):
             return False
 
         split_idx = len(entry.edits) // 2
-        prior_metric = entry.edits[split_idx - 1].resulting_metric
+        prior_metric = entry.metric
+        for edit in entry.edits[:split_idx]:
+            if edit.accepted:
+                prior_metric = edit.resulting_metric
         history[0] = entry.model_copy(
             update={
                 "metric": prior_metric,
