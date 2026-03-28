@@ -98,6 +98,7 @@ class RecordingMetric:
     def __init__(self):
         self.calls = []
         self.initial_calls = []
+        self.reflection_calls = []
 
     def __call__(self, example, prediction):
         self.calls.append(getattr(example, "question", None))
@@ -105,6 +106,9 @@ class RecordingMetric:
 
     def record_initial_train_metric(self, example, prediction, score):
         self.initial_calls.append((getattr(example, "question", None), score))
+
+    def record_reflection_metric(self, example, prediction, score):
+        self.reflection_calls.append((getattr(example, "question", None), score))
 
 
 def test_direct_module_choice_and_signature_order():
@@ -254,6 +258,7 @@ def test_direct_records_initial_train_metric_once_per_train_example():
     assert optimized(question="q1").answer == "blue"
     assert metric.calls == ["q1", "q1"]
     assert metric.initial_calls == [("q1", 0.0)]
+    assert metric.reflection_calls == [("q1", 1.0)]
 
 
 def test_direct_halves_single_history_entry_by_edit_history():

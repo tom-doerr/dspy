@@ -221,7 +221,8 @@ class Direct(Teleprompter):
                     break
 
                 stats["edits_applied"] += 1
-                _, updated_score = self._score_example(program, example)
+                updated_prediction, updated_score = self._score_example(program, example)
+                self._record_reflection_metric(example, updated_prediction, updated_score)
                 history[-1].edits.append(
                     DirectEditStep(
                         edits=module_edits,
@@ -263,6 +264,21 @@ class Direct(Teleprompter):
             recorder(example, prediction, score)
         except Exception as exc:
             logger.warning("Direct initial train metric recorder failed: %s", exc)
+
+    def _record_reflection_metric(
+        self,
+        example: Example,
+        prediction: Prediction | None,
+        score: float,
+    ) -> None:
+        recorder = getattr(self.metric, "record_reflection_metric", None)
+        if not callable(recorder):
+            return
+
+        try:
+            recorder(example, prediction, score)
+        except Exception as exc:
+            logger.warning("Direct reflection metric recorder failed: %s", exc)
 
     def _resolve_prompt_model(self, student: Module):
         if self.prompt_model is not None:
