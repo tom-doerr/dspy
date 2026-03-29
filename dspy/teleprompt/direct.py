@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import numbers
+import time
 from typing import Any
 
 import litellm
@@ -142,6 +144,31 @@ def _current_instructions(program: Module) -> dict[str, str]:
     }
 
 
+def _instruction_lengths(program: Module) -> tuple[dict[str, int], int]:
+    lengths = {
+        name: len(predictor.signature.instructions)
+        for name, predictor in program.named_predictors()
+    }
+    return lengths, sum(lengths.values())
+
+
+def _token_totals(*models) -> tuple[int, int]:
+    input_tokens = 0
+    output_tokens = 0
+    seen_model_ids = set()
+
+    for model in models:
+        if model is None or id(model) in seen_model_ids or not hasattr(model, "history"):
+            continue
+        seen_model_ids.add(id(model))
+        for interaction in model.history:
+            usage = interaction.get("usage", {}) or {}
+            input_tokens += int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
+            output_tokens += int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+
+    return input_tokens, output_tokens
+
+
 def _restore_instructions(program: Module, instructions: dict[str, str]) -> None:
     for name, predictor in program.named_predictors():
         if name not in instructions:
@@ -169,7 +196,9 @@ class Direct(Teleprompter):
         max_history_steps: int | None = None,
         max_history_tokens: int | None = None,
         trim_history_on_context_error: bool = True,
-        use_cot: bool = False,
+        transient_error_retries: int = 8,
+        transient_retry_backoff_s: float = 5.0,
+        use_cot: bool = True,
     ):
         super().__init__()
         if metric is None:
@@ -184,6 +213,10 @@ class Direct(Teleprompter):
             raise ValueError("max_history_steps must be at least 1 when provided.")
         if max_history_tokens is not None and max_history_tokens < 1:
             raise ValueError("max_history_tokens must be at least 1 when provided.")
+        if transient_error_retries < 0:
+            raise ValueError("transient_error_retries must be at least 0.")
+        if transient_retry_backoff_s < 0:
+            raise ValueError("transient_retry_backoff_s must be at least 0.")
 
         self.metric = metric
         self.prompt_model = prompt_model
@@ -192,6 +225,8 @@ class Direct(Teleprompter):
         self.max_history_steps = max_history_steps
         self.max_history_tokens = max_history_tokens
         self.trim_history_on_context_error = trim_history_on_context_error
+        self.transient_error_retries = transient_error_retries
+        self.transient_retry_backoff_s = float(transient_retry_backoff_s)
         self.use_cot = use_cot
         self.optimizer_module = (
             dspy.ChainOfThought(DirectSignature) if use_cot else dspy.Predict(DirectSignature)
@@ -224,22 +259,26 @@ class Direct(Teleprompter):
             "edits_applied": 0,
             "history_halvings": 0,
             "context_retries": 0,
+            "transient_retries": 0,
         }
 
         for example in trainset:
             prediction, score = self._score_example(program, example)
-            self._record_initial_train_metric(example, prediction, score)
-            if not self._should_optimize_score(score):
+            should_optimize = self._should_optimize_score(score)
+            if should_optimize:
+                stats["samples_optimized"] += 1
+                history.append(
+                    DirectHistoryEntry(
+                        sample=_summarize_sample_for_history(example.toDict()),
+                        metric=score,
+                    )
+                )
+            else:
                 stats["samples_skipped"] += 1
+            self._record_initial_train_metric(example, prediction, score, program, history, prompt_model)
+            if not should_optimize:
                 continue
 
-            stats["samples_optimized"] += 1
-            history.append(
-                DirectHistoryEntry(
-                    sample=_summarize_sample_for_history(example.toDict()),
-                    metric=score,
-                )
-            )
             current_score = score
 
             for _ in range(self.max_iters_per_mistake):
@@ -257,7 +296,6 @@ class Direct(Teleprompter):
                     break
 
                 updated_prediction, updated_score = self._score_example(program, example)
-                self._record_reflection_metric(example, updated_prediction, updated_score)
                 accepted = updated_score > current_score
                 history[-1].edits.append(
                     DirectEditStep(
@@ -267,14 +305,17 @@ class Direct(Teleprompter):
                     )
                 )
 
+                if not accepted:
+                    _restore_instructions(program, prior_instructions)
+
+                self._record_reflection_metric(example, updated_prediction, updated_score, program, history, prompt_model)
+
                 if accepted:
                     stats["edits_applied"] += 1
                     current_score = updated_score
                     if not self._should_optimize_score(current_score):
                         break
                     continue
-
-                _restore_instructions(program, prior_instructions)
 
         program.direct_history = [entry.model_dump(mode="json") for entry in history]
         program.direct_stats = stats
@@ -301,13 +342,16 @@ class Direct(Teleprompter):
         example: Example,
         prediction: Prediction | None,
         score: float,
+        program: Module,
+        history: list[DirectHistoryEntry],
+        prompt_model,
     ) -> None:
         recorder = getattr(self.metric, "record_initial_train_metric", None)
         if not callable(recorder):
             return
 
         try:
-            recorder(example, prediction, score)
+            self._call_metric_recorder(recorder, example, prediction, score, program, history, prompt_model)
         except Exception as exc:
             logger.warning("Direct initial train metric recorder failed: %s", exc)
 
@@ -316,15 +360,70 @@ class Direct(Teleprompter):
         example: Example,
         prediction: Prediction | None,
         score: float,
+        program: Module,
+        history: list[DirectHistoryEntry],
+        prompt_model,
     ) -> None:
         recorder = getattr(self.metric, "record_reflection_metric", None)
         if not callable(recorder):
             return
 
         try:
-            recorder(example, prediction, score)
+            self._call_metric_recorder(recorder, example, prediction, score, program, history, prompt_model)
         except Exception as exc:
             logger.warning("Direct reflection metric recorder failed: %s", exc)
+
+    def _call_metric_recorder(
+        self,
+        recorder,
+        example: Example,
+        prediction: Prediction | None,
+        score: float,
+        program: Module,
+        history: list[DirectHistoryEntry],
+        prompt_model,
+    ) -> None:
+        current_instructions = _current_instructions(program)
+        instruction_lengths, total_instruction_length = _instruction_lengths(program)
+        student_model = self._resolve_student_model(program)
+        total_input_tokens, total_output_tokens = _token_totals(student_model, prompt_model)
+        kwargs = {
+            "program": program,
+            "current_instructions": current_instructions,
+            "instruction_lengths": instruction_lengths,
+            "total_instruction_length": total_instruction_length,
+            "history_step_count": self._history_step_count(history),
+            "total_input_tokens": total_input_tokens,
+            "total_output_tokens": total_output_tokens,
+        }
+
+        try:
+            signature = inspect.signature(recorder)
+        except (TypeError, ValueError):
+            recorder(example, prediction, score)
+            return
+
+        accepts_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        )
+        supported_kwargs = {
+            name: value
+            for name, value in kwargs.items()
+            if accepts_kwargs or name in signature.parameters
+        }
+        recorder(example, prediction, score, **supported_kwargs)
+
+    def _resolve_student_model(self, program: Module):
+        try:
+            student_model = program.get_lm()
+        except Exception:
+            student_model = dspy.settings.lm
+
+        if student_model is None:
+            student_model = dspy.settings.lm
+
+        return student_model
 
     def _resolve_prompt_model(self, student: Module):
         if self.prompt_model is not None:
@@ -383,6 +482,7 @@ class Direct(Teleprompter):
             for name, predictor in program.named_predictors()
         }
         module_names = list(current_instructions.keys())
+        transient_retries = 0
 
         while True:
             try:
@@ -395,6 +495,20 @@ class Direct(Teleprompter):
                 return prediction.module_edits
             except Exception as exc:
                 if not self._should_retry_after_context_error(exc):
+                    if self._should_retry_after_transient_error(exc, transient_retries):
+                        transient_retries += 1
+                        stats["transient_retries"] += 1
+                        delay_s = self.transient_retry_backoff_s * transient_retries
+                        logger.warning(
+                            "Direct optimizer transient error (%s/%s): %s. Retrying in %.1fs.",
+                            transient_retries,
+                            self.transient_error_retries,
+                            exc,
+                            delay_s,
+                        )
+                        if delay_s > 0:
+                            time.sleep(delay_s)
+                        continue
                     raise
                 if not self._halve_history(history):
                     raise
@@ -403,6 +517,9 @@ class Direct(Teleprompter):
 
     def _should_retry_after_context_error(self, exc: Exception) -> bool:
         return self.trim_history_on_context_error and _is_context_window_error(exc)
+
+    def _should_retry_after_transient_error(self, exc: Exception, retries_so_far: int) -> bool:
+        return retries_so_far < self.transient_error_retries and _is_transient_api_error(exc)
 
     def _history_exceeds_limits(self, history: list[DirectHistoryEntry], prompt_model) -> bool:
         if self.max_history_steps is not None and self._history_step_count(history) > self.max_history_steps:
@@ -459,6 +576,48 @@ def _is_context_window_error(exc: Exception) -> bool:
 
     message = str(exc).lower()
     return "context window exceeded" in message or "maximum context length" in message or "context_length_exceeded" in message
+
+
+def _is_transient_api_error(exc: Exception) -> bool:
+    current: Exception | None = exc
+    seen = set()
+    transient_names = {
+        "timeout",
+        "readtimeout",
+        "connecttimeout",
+        "connecterror",
+        "apitimeouterror",
+        "apiconnectionerror",
+        "internalservererror",
+        "serviceunavailableerror",
+        "ratelimiterror",
+    }
+    transient_markers = (
+        "timed out",
+        "timeout",
+        "connection refused",
+        "connection reset",
+        "temporarily unavailable",
+        "service unavailable",
+        "bad gateway",
+        "gateway timeout",
+        "rate limit",
+        "too many requests",
+        "server disconnected",
+    )
+
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if current.__class__.__name__.lower() in transient_names:
+            return True
+
+        message = str(current).lower()
+        if any(marker in message for marker in transient_markers):
+            return True
+
+        current = current.__cause__ or current.__context__
+
+    return False
 
 
 def _summarize_sample_for_history(sample: Any) -> Any:

@@ -115,6 +115,32 @@ class HistoryAwareDirectLM(DummyLM):
         )
 
 
+class FlakyDirectLM(DummyLM):
+    def __init__(self):
+        super().__init__([])
+        self.calls = 0
+
+    def forward(self, prompt=None, messages=None, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("Request timed out.")
+        return dotdict(
+            choices=[
+                dotdict(
+                    message=dotdict(
+                        content=self._format_answer_fields(
+                            {"module_edits": {"predictor": [{"search": "", "replace": "If question is q1, answer blue."}]}}
+                        ),
+                        tool_calls=None,
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=dotdict(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+            model="dummy",
+        )
+
+
 class RecordingMetric:
     def __init__(self):
         self.calls = []
@@ -132,20 +158,63 @@ class RecordingMetric:
         self.reflection_calls.append((getattr(example, "question", None), score))
 
 
+class RecordingMetricWithInstructions:
+    def __init__(self):
+        self.initial_lengths = []
+        self.reflection_lengths = []
+        self.initial_history_steps = []
+        self.reflection_history_steps = []
+        self.initial_token_totals = []
+        self.reflection_token_totals = []
+
+    def __call__(self, example, prediction):
+        return score_match(example, prediction)
+
+    def record_initial_train_metric(
+        self,
+        example,
+        prediction,
+        score,
+        total_instruction_length=None,
+        instruction_lengths=None,
+        history_step_count=None,
+        total_input_tokens=None,
+        total_output_tokens=None,
+    ):
+        self.initial_lengths.append((total_instruction_length, instruction_lengths))
+        self.initial_history_steps.append(history_step_count)
+        self.initial_token_totals.append((total_input_tokens, total_output_tokens))
+
+    def record_reflection_metric(
+        self,
+        example,
+        prediction,
+        score,
+        total_instruction_length=None,
+        instruction_lengths=None,
+        history_step_count=None,
+        total_input_tokens=None,
+        total_output_tokens=None,
+    ):
+        self.reflection_lengths.append((total_instruction_length, instruction_lengths))
+        self.reflection_history_steps.append(history_step_count)
+        self.reflection_token_totals.append((total_input_tokens, total_output_tokens))
+
+
 def test_direct_module_choice_and_signature_order():
     optimizer = Direct(metric=score_match)
-    assert isinstance(optimizer.optimizer_module, dspy.Predict)
+    assert isinstance(optimizer.optimizer_module, dspy.ChainOfThought)
     assert optimizer.max_iters_per_mistake == 3
     assert optimizer.min_metric_to_skip == 1.0
-    assert list(optimizer.optimizer_module.signature.input_fields.keys()) == [
+    assert list(optimizer.optimizer_module.predict.signature.input_fields.keys()) == [
         "history",
         "current_instructions",
         "module_names",
     ]
 
-    cot_optimizer = Direct(metric=score_match, use_cot=True)
-    assert isinstance(cot_optimizer.optimizer_module, dspy.ChainOfThought)
-    assert list(cot_optimizer.optimizer_module.predict.signature.input_fields.keys()) == [
+    predict_optimizer = Direct(metric=score_match, use_cot=False)
+    assert isinstance(predict_optimizer.optimizer_module, dspy.Predict)
+    assert list(predict_optimizer.optimizer_module.signature.input_fields.keys()) == [
         "history",
         "current_instructions",
         "module_names",
@@ -189,7 +258,7 @@ def test_direct_compile_fixes_single_mistake():
 
     student = SimpleModule()
     student.set_lm(task_lm)
-    optimizer = Direct(metric=score_match, prompt_model=optimizer_lm)
+    optimizer = Direct(metric=score_match, prompt_model=optimizer_lm, use_cot=False)
 
     trainset = [Example(question="q1", answer="blue").with_inputs("question")]
     optimized = optimizer.compile(student, trainset=trainset)
@@ -222,7 +291,7 @@ def test_direct_reverts_failed_edit_but_keeps_attempt_in_history():
 
     student = SimpleModule()
     student.set_lm(task_lm)
-    optimizer = Direct(metric=score_match, prompt_model=optimizer_lm, max_iters_per_mistake=2)
+    optimizer = Direct(metric=score_match, prompt_model=optimizer_lm, max_iters_per_mistake=2, use_cot=False)
 
     trainset = [Example(question="q1", answer="blue").with_inputs("question")]
     optimized = optimizer.compile(student, trainset=trainset)
@@ -259,7 +328,7 @@ def test_direct_accepts_improving_edits_until_threshold():
 
     student = SimpleModule()
     student.set_lm(task_lm)
-    optimizer = Direct(metric=score_answer, prompt_model=optimizer_lm, max_iters_per_mistake=3)
+    optimizer = Direct(metric=score_answer, prompt_model=optimizer_lm, max_iters_per_mistake=3, use_cot=False)
 
     trainset = [Example(question="q1").with_inputs("question")]
     optimized = optimizer.compile(student, trainset=trainset)
@@ -282,7 +351,7 @@ def test_direct_skips_scores_at_or_above_default_threshold():
     task_lm = InstructionAnswerTaskLM([], default_answer="good")
     student = SimpleModule()
     student.set_lm(task_lm)
-    optimizer = Direct(metric=score_answer, prompt_model=DummyLM([]))
+    optimizer = Direct(metric=score_answer, prompt_model=DummyLM([]), use_cot=False)
 
     trainset = [Example(question="q1").with_inputs("question")]
     optimized = optimizer.compile(student, trainset=trainset)
@@ -308,7 +377,13 @@ def test_direct_can_always_optimize_when_skip_threshold_is_none():
 
     student = SimpleModule()
     student.set_lm(task_lm)
-    optimizer = Direct(metric=score_answer, prompt_model=optimizer_lm, min_metric_to_skip=None, max_iters_per_mistake=1)
+    optimizer = Direct(
+        metric=score_answer,
+        prompt_model=optimizer_lm,
+        min_metric_to_skip=None,
+        max_iters_per_mistake=1,
+        use_cot=False,
+    )
 
     trainset = [Example(question="q1").with_inputs("question")]
     optimized = optimizer.compile(student, trainset=trainset)
@@ -331,7 +406,7 @@ def test_direct_halves_history_after_context_error():
     student = SimpleModule()
     student.set_lm(task_lm)
 
-    optimizer = Direct(metric=score_match, prompt_model=HistoryAwareDirectLM())
+    optimizer = Direct(metric=score_match, prompt_model=HistoryAwareDirectLM(), use_cot=False)
     trainset = [
         Example(question="q1", answer="blue").with_inputs("question"),
         Example(question="q2", answer="green").with_inputs("question"),
@@ -344,6 +419,26 @@ def test_direct_halves_history_after_context_error():
     assert optimized.direct_stats["history_halvings"] == 1
     assert len(optimized.direct_history) == 1
     assert optimized.direct_history[0]["sample"]["question"] == "q2"
+
+
+def test_direct_retries_transient_optimizer_errors():
+    task_lm = RuleAwareTaskLM({"q1": ("If question is q1, answer blue.", "blue")})
+    student = SimpleModule()
+    student.set_lm(task_lm)
+
+    optimizer = Direct(
+        metric=score_match,
+        prompt_model=FlakyDirectLM(),
+        transient_error_retries=2,
+        transient_retry_backoff_s=0.0,
+        use_cot=False,
+    )
+
+    trainset = [Example(question="q1", answer="blue").with_inputs("question")]
+    optimized = optimizer.compile(student, trainset=trainset)
+
+    assert optimized(question="q1").answer == "blue"
+    assert optimized.direct_stats["transient_retries"] == 1
 
 
 def test_direct_compile_runs_final_valset_eval():
@@ -362,7 +457,7 @@ def test_direct_compile_runs_final_valset_eval():
 
     student = SimpleModule()
     student.set_lm(task_lm)
-    optimizer = Direct(metric=prediction_score_match, prompt_model=optimizer_lm)
+    optimizer = Direct(metric=prediction_score_match, prompt_model=optimizer_lm, use_cot=False)
 
     trainset = [Example(question="q1", answer="blue").with_inputs("question")]
     valset = [Example(question="q1", answer="blue").with_inputs("question")]
@@ -395,7 +490,7 @@ def test_direct_records_initial_train_metric_once_per_train_example():
 
     student = SimpleModule()
     student.set_lm(task_lm)
-    optimizer = Direct(metric=metric, prompt_model=optimizer_lm)
+    optimizer = Direct(metric=metric, prompt_model=optimizer_lm, use_cot=False)
 
     trainset = [Example(question="q1", answer="blue").with_inputs("question")]
     optimized = optimizer.compile(student, trainset=trainset)
@@ -404,6 +499,48 @@ def test_direct_records_initial_train_metric_once_per_train_example():
     assert metric.calls == ["q1", "q1"]
     assert metric.initial_calls == [("q1", 0.0)]
     assert metric.reflection_calls == [("q1", 1.0)]
+
+
+def test_direct_metric_recorders_receive_instruction_lengths():
+    task_lm = RuleAwareTaskLM({"q1": ("If question is q1, answer blue.", "blue")})
+    optimizer_lm = DummyLM(
+        [
+            {
+                "module_edits": {
+                    "predictor": [
+                        {"search": "", "replace": "If question is q1, answer blue."},
+                    ]
+                }
+            }
+        ]
+    )
+    metric = RecordingMetricWithInstructions()
+
+    student = SimpleModule()
+    student.set_lm(task_lm)
+    initial_instruction_length = len(student.predictor.signature.instructions)
+    optimizer = Direct(metric=metric, prompt_model=optimizer_lm, use_cot=False)
+
+    trainset = [Example(question="q1", answer="blue").with_inputs("question")]
+    optimized = optimizer.compile(student, trainset=trainset)
+
+    assert metric.initial_lengths == [
+        (
+            initial_instruction_length,
+            {"predictor": initial_instruction_length},
+        )
+    ]
+    assert metric.initial_history_steps == [1]
+    assert metric.initial_token_totals == [(0, 0)]
+    final_instruction_length = len(optimized.predictor.signature.instructions)
+    assert metric.reflection_lengths == [
+        (
+            final_instruction_length,
+            {"predictor": final_instruction_length},
+        )
+    ]
+    assert metric.reflection_history_steps == [2]
+    assert metric.reflection_token_totals == [(0, 0)]
 
 
 def test_direct_halves_single_history_entry_by_edit_history():
