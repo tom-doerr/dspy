@@ -123,7 +123,8 @@ class StreamListener:
             else:
                 return
         try:
-            rc = getattr(chunk.choices[0].delta, "reasoning_content", None)
+            d = chunk.choices[0].delta
+            rc = getattr(d, "reasoning_content", None) or getattr(d, "reasoning", None)
         except (AttributeError, IndexError):
             return
         if rc is None:
