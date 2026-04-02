@@ -257,6 +257,7 @@ class PRISM(Teleprompter):
                     student, deck, ps, n_eval,
                     deck_idx=deck_idx, executor=gp)
             for sc, k, sel, ex, pred in res:
+                n_evals += 1
                 if sc is None: continue
                 self._upd(ps, sel, sc, cr)
                 recent.append(sc)
@@ -272,7 +273,6 @@ class PRISM(Teleprompter):
                         gen_futs.append(f)
                         self._gen_start_evals[id(f)] = n_evals
                 cands.append({"score": sc, "knowledge": k})
-                n_evals += 1
             if (gn and not self.gen_on_mistake
                     and self.gen_every
                     and n_evals - last_gen_at >= self.gen_every):

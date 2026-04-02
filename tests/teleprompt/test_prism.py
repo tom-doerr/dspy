@@ -330,3 +330,32 @@ def test_compile_end_to_end():
     assert len(opt.state.pool) > initial_pool_size
     assert hasattr(result, "_prism_knowledge")
     assert len(result._prism_knowledge) > 0
+
+
+# 11. Failed evals count as steps
+def test_failed_evals_count_as_steps():
+    """Evals that raise exceptions still count toward
+    max_steps so the optimizer terminates."""
+    call_count = 0
+
+    class FailingModule(dspy.Module):
+        def __init__(self):
+            super().__init__()
+            self.predictor = Predict("input -> output")
+
+        def forward(self, **kw):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("simulated failure")
+
+    lm = DummyLM([{"output": "x"}] * 200)
+    dspy.settings.configure(lm=lm)
+    opt = PRISM(
+        metric=always_one, max_steps=5,
+        num_threads=1,
+        initial_knowledge=["piece"],
+    )
+    opt._gen_async = MagicMock(return_value=[])
+    opt.compile(FailingModule(), trainset=_trainset())
+    assert opt.state.eval_failures >= 5
+    assert call_count >= 5
