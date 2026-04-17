@@ -254,6 +254,53 @@ class BaseCallback:
         """
         pass
 
+    def on_teleprompter_start(
+        self,
+        call_id: str,
+        instance: Any,
+        inputs: dict[str, Any],
+    ):
+        """A handler triggered when a teleprompter compile starts.
+
+        Args:
+            call_id: A unique identifier for the compile call.
+            instance: The Teleprompter instance.
+            inputs: The inputs to the teleprompter's compile() method.
+        """
+        pass
+
+    def on_teleprompter_progress(
+        self,
+        call_id: str,
+        instance: Any,
+        event: dict[str, Any],
+    ):
+        """A handler triggered when a teleprompter emits progress.
+
+        Args:
+            call_id: A unique identifier for the compile call.
+            instance: The Teleprompter instance.
+            event: Progress payload emitted during compile().
+        """
+        pass
+
+    def on_teleprompter_end(
+        self,
+        call_id: str,
+        outputs: Any | None,
+        exception: Exception | None = None,
+    ):
+        """A handler triggered after a teleprompter compile finishes.
+
+        Args:
+            call_id: A unique identifier for the compile call.
+            outputs: The outputs of compile(). If interrupted by an exception,
+                this will be None.
+            exception: If an exception is raised during execution, it is stored
+                here.
+        """
+        pass
+
 
 def with_callbacks(fn):
     """Decorator to add callback functionality to instance methods."""
@@ -350,6 +397,8 @@ def with_callbacks(fn):
 
 def _get_on_start_handler(callback: BaseCallback, instance: Any, fn: Callable) -> Callable:
     """Selects the appropriate on_start handler of the callback based on the instance and function name."""
+    if _is_teleprompter_instance(instance):
+        return callback.on_teleprompter_start
     if isinstance(instance, dspy.LM):
         return callback.on_lm_start
     elif isinstance(instance, dspy.Evaluate):
@@ -372,6 +421,8 @@ def _get_on_start_handler(callback: BaseCallback, instance: Any, fn: Callable) -
 
 def _get_on_end_handler(callback: BaseCallback, instance: Any, fn: Callable) -> Callable:
     """Selects the appropriate on_end handler of the callback based on the instance and function name."""
+    if _is_teleprompter_instance(instance):
+        return callback.on_teleprompter_end
     if isinstance(instance, (dspy.LM)):
         return callback.on_lm_end
     elif isinstance(instance, dspy.Evaluate):
@@ -390,3 +441,11 @@ def _get_on_end_handler(callback: BaseCallback, instance: Any, fn: Callable) -> 
 
     # We treat everything else as a module.
     return callback.on_module_end
+
+
+def _is_teleprompter_instance(instance: Any) -> bool:
+    try:
+        from dspy.teleprompt.teleprompt import Teleprompter
+    except Exception:
+        return False
+    return isinstance(instance, Teleprompter)

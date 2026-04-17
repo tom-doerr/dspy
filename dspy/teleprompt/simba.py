@@ -40,6 +40,7 @@ class SIMBA(Teleprompter):
         temperature_for_sampling: float = 0.2,
         temperature_for_candidates: float = 0.2,
         use_edit_rules: bool = False,
+        callbacks: list[Any] | None = None,
     ) -> None:
         """
         Initializes SIMBA.
@@ -65,6 +66,7 @@ class SIMBA(Teleprompter):
             temperature_for_candidates: Temperature used for picking
                 the source program for building new candidates. Defaults to 0.2.
         """
+        super().__init__(callbacks=callbacks)
         self.metric = metric
         self.bsize = bsize
         self.num_candidates = num_candidates
@@ -165,6 +167,7 @@ class SIMBA(Teleprompter):
         data_indices = list(range(len(trainset)))
         rng.shuffle(data_indices)
         instance_idx = 0
+        seen_indices = []
 
         # Parallel runner
         run_parallel = dspy.Parallel(access_examples=False, num_threads=self.num_threads)
@@ -181,8 +184,23 @@ class SIMBA(Teleprompter):
                 instance_idx = 0
 
             batch_indices = data_indices[instance_idx : instance_idx + self.bsize]
+            seen_indices.extend(batch_indices)
             batch = [trainset[i] for i in batch_indices]
             instance_idx += self.bsize
+            unique_seen_count = len(set(seen_indices))
+            examples_seen_total = len(seen_indices)
+            self._emit_progress(
+                type="step_start",
+                step_idx=batch_idx + 1,
+                total_steps=self.max_steps,
+                batch_size=self.bsize,
+                batch_indices=batch_indices,
+                trainset_size=len(trainset),
+                examples_seen_total=examples_seen_total,
+                unique_seen_count=unique_seen_count,
+                sample_epoch=examples_seen_total / len(trainset),
+                coverage_ratio=unique_seen_count / len(trainset),
+            )
 
             # We'll generate (program, model) pairs for the trajectory sampling.
             # Prepare distinct LMs (with different temperatures, etc.) from the baseline=programs[0].
@@ -335,6 +353,21 @@ class SIMBA(Teleprompter):
                 sys_scores = [outputs[i]["score"] for i in range(start, end)]
                 register_new_program(cand_sys, sys_scores)
 
+            self._emit_progress(
+                type="step_end",
+                step_idx=batch_idx + 1,
+                total_steps=self.max_steps,
+                batch_size=self.bsize,
+                trainset_size=len(trainset),
+                examples_seen_total=examples_seen_total,
+                unique_seen_count=unique_seen_count,
+                sample_epoch=examples_seen_total / len(trainset),
+                coverage_ratio=unique_seen_count / len(trainset),
+                baseline_score=baseline_score,
+                candidate_count=len(system_candidates),
+                best_candidate_score=max(candidate_scores) if candidate_scores else None,
+            )
+
         M = len(winning_programs) - 1  # noqa: N806
         N = self.num_candidates + 1  # noqa: N806
         if M < 1:
@@ -345,6 +378,14 @@ class SIMBA(Teleprompter):
         program_idxs = list(dict.fromkeys(program_idxs))
 
         candidate_programs = [winning_programs[i].deepcopy() for i in program_idxs]
+        self._emit_progress(
+            type="validation_start",
+            total_steps=self.max_steps,
+            trainset_size=len(trainset),
+            candidate_count=len(candidate_programs),
+            validation_size=len(trainset),
+            validation_kind="trainset",
+        )
         logger.info(f"VALIDATION: Evaluating {len(candidate_programs)} programs on the full trainset.")
         exec_pairs = [(wrap_program(sys, self.metric), ex) for sys in candidate_programs for ex in trainset]
         outputs = run_parallel(exec_pairs)
@@ -369,6 +410,17 @@ class SIMBA(Teleprompter):
         logger.info(
             f"Final trainset scores: {scores}, Best: {max(scores) if scores else 'N/A'} "
             f"(at index {best_idx if scores else 'N/A'})\n\n\n"
+        )
+        self._emit_progress(
+            type="validation_end",
+            total_steps=self.max_steps,
+            trainset_size=len(trainset),
+            candidate_count=len(candidate_programs),
+            validation_size=len(trainset),
+            validation_kind="trainset",
+            validation_scores=scores,
+            best_validation_score=max(scores) if scores else None,
+            best_validation_index=best_idx if scores else None,
         )
 
         # Attach sorted, scored candidates & logs

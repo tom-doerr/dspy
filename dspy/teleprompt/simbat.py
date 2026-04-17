@@ -109,6 +109,20 @@ class SIMBAT(SIMBA):
             seen_indices.extend(batch_indices)
             batch = [trainset[i] for i in batch_indices]
             instance_idx += self.bsize
+            unique_seen_count = len(set(seen_indices))
+            examples_seen_total = len(seen_indices)
+            self._emit_progress(
+                type="step_start",
+                step_idx=batch_idx + 1,
+                total_steps=self.max_steps,
+                batch_size=self.bsize,
+                batch_indices=batch_indices,
+                trainset_size=len(trainset),
+                examples_seen_total=examples_seen_total,
+                unique_seen_count=unique_seen_count,
+                sample_epoch=examples_seen_total / len(trainset),
+                coverage_ratio=unique_seen_count / len(trainset),
+            )
 
             # STEP 2: sample trajectories
             models = prepare_models_for_resampling(programs[0], self.num_candidates)
@@ -127,6 +141,10 @@ class SIMBAT(SIMBA):
             logger.info(f"Sampling program trajectories on {self.bsize} examples x {self.num_candidates} samples.")
             outputs = run_parallel(exec_pairs)
             assert len(outputs) == self.bsize * self.num_candidates
+            baseline_score = (
+                sum(float(o["score"]) for o in outputs) / len(outputs)
+                if outputs else 0.0
+            )
 
             # STEP 3: bucket by example
             buckets = []
@@ -212,6 +230,21 @@ class SIMBAT(SIMBA):
                 start, end = i * self.bsize, (i + 1) * self.bsize
                 register_new_program(cand, [outputs[j]["score"] for j in range(start, end)])
 
+            self._emit_progress(
+                type="step_end",
+                step_idx=batch_idx + 1,
+                total_steps=self.max_steps,
+                batch_size=self.bsize,
+                trainset_size=len(trainset),
+                examples_seen_total=examples_seen_total,
+                unique_seen_count=unique_seen_count,
+                sample_epoch=examples_seen_total / len(trainset),
+                coverage_ratio=unique_seen_count / len(trainset),
+                baseline_score=baseline_score,
+                candidate_count=len(system_candidates),
+                best_candidate_score=max(candidate_scores) if candidate_scores else None,
+            )
+
         # ---- CHANGED: validation on tail, not full trainset ----
         M = len(winning_programs) - 1
         N = self.num_candidates + 1
@@ -240,6 +273,14 @@ class SIMBAT(SIMBA):
                     seen.add(idx)
         evalset = [trainset[i] for i in eval_indices]
 
+        self._emit_progress(
+            type="validation_start",
+            total_steps=self.max_steps,
+            trainset_size=len(trainset),
+            candidate_count=len(candidate_programs),
+            validation_size=len(evalset),
+            validation_kind="tail",
+        )
         logger.info(f"VALIDATION: Evaluating {len(candidate_programs)} programs on a {len(evalset)}-example tail set.")
         exec_pairs = [(wrap_program(sys, self.metric), ex) for sys in candidate_programs for ex in evalset]
         outputs = run_parallel(exec_pairs)
@@ -261,6 +302,17 @@ class SIMBAT(SIMBA):
         logger.info(
             f"Final tail set scores: {scores}, Best: {max(scores) if scores else 'N/A'} "
             f"(at index {best_idx if scores else 'N/A'})\n\n\n"
+        )
+        self._emit_progress(
+            type="validation_end",
+            total_steps=self.max_steps,
+            trainset_size=len(trainset),
+            candidate_count=len(candidate_programs),
+            validation_size=len(evalset),
+            validation_kind="tail",
+            validation_scores=scores,
+            best_validation_score=max(scores) if scores else None,
+            best_validation_index=best_idx if scores else None,
         )
         
         return best_program
