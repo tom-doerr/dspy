@@ -22,6 +22,7 @@ from dspy.teleprompt.teleprompt import Teleprompter
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+SAMPLING_MODES = {"independent", "joint"}
 
 
 @dataclass
@@ -102,11 +103,13 @@ class _CreditModel:
         self.intercept = float(coefs[-1])
 
 
-def _draw_seen(pieces, seen, betas, temp, cov):
-    """Draw from joint posterior for seen pieces."""
+def _draw_seen(pieces, seen, betas, temp, cov,
+               sampling="independent"):
+    """Draw piece utilities with independent or joint posterior noise."""
+    assert sampling in SAMPLING_MODES, "sampling"
     if temp <= 0:
         return betas
-    if cov is not None and len(seen) <= cov.shape[0]:
+    if sampling == "joint" and cov is not None and len(seen) <= cov.shape[0]:
         sub_cov = cov[np.ix_(seen, seen)]
         sub_cov = (sub_cov + sub_cov.T) / 2
         np.fill_diagonal(sub_cov, np.maximum(
@@ -120,13 +123,15 @@ def _draw_seen(pieces, seen, betas, temp, cov):
     return betas + temp * np.array(stds) * np.random.randn(len(seen))
 
 
-def _sample(pieces, temp=1.0, cov=None):
-    """Select pieces with positive draw from joint posterior."""
+def _sample(pieces, temp=1.0, cov=None, sampling="independent"):
+    """Select pieces with positive draw from the configured posterior."""
     n = len(pieces)
     if not n:
         return []
     betas = np.array([p.coef for p in pieces])
-    draws = _draw_seen(pieces, list(range(n)), betas, temp, cov)
+    draws = _draw_seen(
+        pieces, list(range(n)), betas, temp, cov,
+        sampling=sampling)
     pos = betas[betas > 0]
     thr = float(pos.mean()) if len(pos) else 0.0
     sel = [i for i, d in enumerate(draws) if d > thr]
@@ -190,12 +195,14 @@ class PRISM(Teleprompter):
                  num_threads=1, temp=1.0,
                  max_piece_words=15,
                  max_gen_parallel=None,
-                 gen_n_obs=1, ablation=False, **kw):
+                 gen_n_obs=1, ablation=False,
+                 sampling="independent", **kw):
         super().__init__()
         assert num_threads >= 1, "num_threads"
         assert max_steps >= 1, "max_steps"
         assert gen_every >= 0, "gen_every"
         assert temp >= 0, "temp"
+        assert sampling in SAMPLING_MODES, "sampling"
         self.metric = metric
         self.reward_fn = reward_fn
         self.max_steps = max_steps
@@ -209,6 +216,7 @@ class PRISM(Teleprompter):
         self.max_gen_parallel = max_gen_parallel or num_threads
         self.gen_n_obs = max(1, gen_n_obs)
         self.ablation = ablation
+        self.sampling = sampling
         self.state = PrismState()
 
     def compile(self, student, *, trainset, seed=0):
@@ -304,8 +312,9 @@ class PRISM(Teleprompter):
                 deck_idx = 0
             ex = deck[deck_idx]
             deck_idx += 1
-            cov = self._credit_model.cov if hasattr(self, '_credit_model') else None
-            sel = _sample(ps, self.temp, cov) if ps else []
+            cov = self._credit_model.cov if self.sampling == "joint" else None
+            sel = _sample(ps, self.temp, cov,
+                          sampling=self.sampling) if ps else []
             k = _build(ps, sel) if sel else ""
             jobs.append((ex, sel, k))
         if n <= 1:
@@ -332,8 +341,10 @@ class PRISM(Teleprompter):
         for _ in range(n):
             if deck_idx >= len(deck):
                 random.shuffle(deck); deck_idx = 0
-            cov = getattr(self._credit_model, 'cov', None)
-            sel = _sample(ps, self.temp, cov) if ps else []
+            cov = (getattr(self._credit_model, 'cov', None)
+                   if self.sampling == "joint" else None)
+            sel = _sample(ps, self.temp, cov,
+                          sampling=self.sampling) if ps else []
             jobs.append((deck[deck_idx], sel)); deck_idx += 1
         tp = executor or ThreadPoolExecutor(n)
         fs = {tp.submit(self._ablation_chain, student,

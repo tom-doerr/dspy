@@ -1,7 +1,7 @@
 """Unit tests for PRISM optimizer."""
 from __future__ import annotations
 from concurrent.futures import Future
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 import dspy
@@ -284,6 +284,44 @@ def test_init_rejects_bad_gen_every():
 def test_init_rejects_bad_temp():
     with pytest.raises(AssertionError, match="temp"):
         PRISM(metric=always_one, temp=-0.5)
+
+
+def test_init_rejects_bad_sampling_mode():
+    with pytest.raises(AssertionError, match="sampling"):
+        PRISM(metric=always_one, sampling="correlated")
+
+
+def test_prism_sampling_defaults_to_independent():
+    opt = PRISM(metric=always_one)
+    assert opt.sampling == "independent"
+
+
+def test_sample_independent_ignores_covariance():
+    pieces = [_Piece("a"), _Piece("b")]
+    for p in pieces:
+        p.coef = 0.1
+        p.stderr = 1.0
+    cov = np.eye(2)
+    with patch("numpy.random.multivariate_normal") as mvn:
+        _sample(pieces, temp=1.0, cov=cov)
+    mvn.assert_not_called()
+
+
+def test_sample_joint_uses_covariance():
+    pieces = [_Piece("a"), _Piece("b")]
+    for p in pieces:
+        p.coef = 0.1
+        p.stderr = 1.0
+    cov = np.eye(2)
+    with patch(
+        "numpy.random.multivariate_normal",
+        return_value=np.array([1.0, -1.0]),
+    ) as mvn:
+        sel = _sample(
+            pieces, temp=1.0, cov=cov,
+            sampling="joint")
+    mvn.assert_called_once()
+    assert sel == [0]
 
 
 # 9. PrismState dataclass
