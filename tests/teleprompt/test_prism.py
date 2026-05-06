@@ -1,6 +1,7 @@
 """Unit tests for PRISM optimizer."""
 from __future__ import annotations
 from concurrent.futures import Future
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
@@ -9,7 +10,8 @@ from dspy import Example
 from dspy.predict import Predict
 from dspy.teleprompt.prism import (
     PRISM, PrismState, _CreditModel, _Piece,
-    _build, _fmt_observation, _sample, _set_instructions,
+    _build, _extract_native_reasoning, _fmt_observation,
+    _sample, _set_instructions,
     _summarize_prediction,
 )
 from dspy.utils.dummies import DummyLM
@@ -293,6 +295,16 @@ def test_generation_observation_includes_native_reasoning():
     observation = opt._gen_async.call_args.args[2]
     assert "Native thinking:" in observation
     assert "Some reasoning" in observation
+
+
+def test_native_reasoning_is_not_truncated():
+    text = "x" * 5000
+    prog = SimpleNamespace(history=[{
+        "uuid": "1",
+        "outputs": [{"text": "answer", "reasoning_content": text}],
+    }])
+
+    assert _extract_native_reasoning(prog) == text
 
 
 def test_summarize_prediction_drops_completions_and_logprobs():

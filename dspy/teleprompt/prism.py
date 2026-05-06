@@ -176,7 +176,7 @@ def _reasoning_from_history_entry(entry):
     return "\n".join(c for c in chunks if c).strip()
 
 
-def _extract_native_reasoning(prog, max_chars=4000):
+def _extract_native_reasoning(prog):
     histories = [getattr(prog, "history", []) or []]
     if hasattr(prog, "named_predictors"):
         for _, pred in prog.named_predictors():
@@ -194,10 +194,7 @@ def _extract_native_reasoning(prog, max_chars=4000):
             rc = _reasoning_from_history_entry(entry)
             if rc:
                 chunks.append(rc)
-    text = "\n---\n".join(chunks).strip()
-    if max_chars and len(text) > max_chars:
-        text = text[-max_chars:].lstrip()
-    return text
+    return "\n---\n".join(chunks).strip()
 
 
 def _set_instructions(prog, knowledge):
