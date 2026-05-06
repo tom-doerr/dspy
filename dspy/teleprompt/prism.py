@@ -157,8 +157,46 @@ def _fmt_observation(ex, pred, sc):
            if not k.startswith('_') and k != 'logprobs'}
     text = (f"Input: {text_inp}\nPredicted: {out}\n"
             f"Expected: {lbl}\nScore: {sc:.3f}")
+    reasoning = getattr(pred, "_native_reasoning", None)
+    if reasoning:
+        text += f"\nNative thinking: {reasoning}"
     if images:
         return [text] + images
+    return text
+
+
+def _reasoning_from_history_entry(entry):
+    chunks = []
+    for output in entry.get("outputs", []) or []:
+        if not isinstance(output, dict):
+            continue
+        rc = output.get("reasoning_content")
+        if rc:
+            chunks.append(str(rc).strip())
+    return "\n".join(c for c in chunks if c).strip()
+
+
+def _extract_native_reasoning(prog, max_chars=4000):
+    histories = [getattr(prog, "history", []) or []]
+    if hasattr(prog, "named_predictors"):
+        for _, pred in prog.named_predictors():
+            histories.append(getattr(pred, "history", []) or [])
+    seen, chunks = set(), []
+    for hist in histories:
+        for entry in hist:
+            uid = entry.get("uuid") if isinstance(entry, dict) else None
+            if uid and uid in seen:
+                continue
+            if uid:
+                seen.add(uid)
+            if not isinstance(entry, dict):
+                continue
+            rc = _reasoning_from_history_entry(entry)
+            if rc:
+                chunks.append(rc)
+    text = "\n---\n".join(chunks).strip()
+    if max_chars and len(text) > max_chars:
+        text = text[-max_chars:].lstrip()
     return text
 
 
@@ -177,11 +215,15 @@ def _summarize_prediction(pred):
     if pred is None or not isinstance(pred, dspy.Prediction):
         return pred
 
-    return dspy.Prediction(**{
+    summarized = dspy.Prediction(**{
         key: getattr(pred, key)
         for key in pred.keys()
         if key != "logprobs"
     })
+    reasoning = getattr(pred, "_native_reasoning", None)
+    if reasoning:
+        summarized._native_reasoning = reasoning
+    return summarized
 
 
 class PRISM(Teleprompter):
@@ -362,6 +404,9 @@ class PRISM(Teleprompter):
             _set_instructions(prog, knowledge)
             with dspy.context(trace=[]):
                 pred = prog(**ex.inputs())
+            reasoning = _extract_native_reasoning(prog)
+            if reasoning and isinstance(pred, dspy.Prediction):
+                pred._native_reasoning = reasoning
             s = self.metric(ex, pred)
             if self.reward_fn:
                 sc = float(self.reward_fn(ex, pred))
@@ -417,6 +462,9 @@ class PRISM(Teleprompter):
             inp = dict(ex.inputs()); inp['knowledge'] = knowledge
             with dspy.context(trace=[]):
                 pred = p(**inp)
+            reasoning = _extract_native_reasoning(p)
+            if reasoning and isinstance(pred, dspy.Prediction):
+                pred._native_reasoning = reasoning
             s = self.metric(ex, pred)
             sc = (float(self.reward_fn(ex, pred)) if self.reward_fn
                   else float(s) if isinstance(s, (int, float))

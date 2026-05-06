@@ -275,15 +275,37 @@ def test_generation_observation_includes_successful_recent_eval():
     assert "Predicted:" in observation
 
 
+def test_generation_observation_includes_native_reasoning():
+    """Native predictor reasoning_content is passed to generation."""
+    lm = DummyLM([{"output": "a0"}] * 100, reasoning=True)
+    dspy.settings.configure(lm=lm)
+    opt = PRISM(
+        metric=always_one,
+        max_steps=1,
+        gen_every=1,
+        num_threads=1,
+        initial_knowledge=["piece"],
+    )
+    opt._gen_async = MagicMock(return_value=["new"])
+
+    opt.compile(SimpleModule(), trainset=_trainset(), seed=42)
+
+    observation = opt._gen_async.call_args.args[2]
+    assert "Native thinking:" in observation
+    assert "Some reasoning" in observation
+
+
 def test_summarize_prediction_drops_completions_and_logprobs():
     pred = dspy.Prediction(output="answer", logprobs={"token": -0.1})
     pred._completions = {"large": "payload"}
+    pred._native_reasoning = "thinking"
 
     summarized = _summarize_prediction(pred)
 
     assert summarized.output == "answer"
     assert summarized._completions is None
     assert "logprobs" not in summarized.keys()
+    assert summarized._native_reasoning == "thinking"
 
 
 # 8. Validation assertions
