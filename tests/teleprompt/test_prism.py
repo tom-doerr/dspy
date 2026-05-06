@@ -254,6 +254,27 @@ def test_fmt_observation():
     assert "pred_a" in obs
 
 
+def test_generation_observation_includes_successful_recent_eval():
+    """Periodic generation should see recent successful evals too."""
+    lm = DummyLM([{"output": "a0"}] * 100)
+    dspy.settings.configure(lm=lm)
+    opt = PRISM(
+        metric=always_one,
+        max_steps=1,
+        gen_every=1,
+        num_threads=1,
+        initial_knowledge=["piece"],
+    )
+    opt._gen_async = MagicMock(return_value=["new"])
+
+    opt.compile(SimpleModule(), trainset=_trainset(), seed=42)
+
+    assert opt._gen_async.called
+    observation = opt._gen_async.call_args.args[2]
+    assert "Score: 1.000" in observation
+    assert "Predicted:" in observation
+
+
 def test_summarize_prediction_drops_completions_and_logprobs():
     pred = dspy.Prediction(output="answer", logprobs={"token": -0.1})
     pred._completions = {"large": "payload"}

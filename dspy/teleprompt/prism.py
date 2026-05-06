@@ -269,17 +269,16 @@ class PRISM(Teleprompter):
                 if sc is None: continue
                 self._upd(ps, sel, sc, cr)
                 recent.append(sc)
-                if sc < 0:
-                    recent_obs.append(
-                        _fmt_observation(ex, pred, sc))
-                    obs = self._merge_obs(recent_obs)
-                    pending = sum(1 for f in gen_futs if not f.done())
-                    if self.gen_on_mistake and gn and pending < self.max_gen_parallel:
-                        self.state.gen_count += 1
-                        f = gp.submit(self._gen_async,
-                                      ps, gn, obs)
-                        gen_futs.append(f)
-                        self._gen_start_evals[id(f)] = n_evals
+                recent_obs.append(_fmt_observation(ex, pred, sc))
+                obs = self._merge_obs(recent_obs)
+                pending = sum(1 for f in gen_futs if not f.done())
+                if (sc < 0 and self.gen_on_mistake and gn
+                        and pending < self.max_gen_parallel):
+                    self.state.gen_count += 1
+                    f = gp.submit(self._gen_async,
+                                  ps, gn, obs)
+                    gen_futs.append(f)
+                    self._gen_start_evals[id(f)] = n_evals
                 cands.append({"score": sc, "knowledge": k})
             if (gn and not self.gen_on_mistake
                     and self.gen_every
